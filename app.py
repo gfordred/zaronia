@@ -131,7 +131,7 @@ class JibarZeroCurve:
         return np.exp(-r * t)
 
 class ZaroniaCurve:
-    def __init__(self, val_date, jibar_curve, spread_func, max_years=30):
+    def __init__(self, val_date, jibar_curve, spread_func, max_years=10):
         self.val_date = val_date
         self.jibar_curve = jibar_curve
         self.spread_func = spread_func
