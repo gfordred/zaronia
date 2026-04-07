@@ -811,7 +811,7 @@ def main():
 
         st.caption(f" {found_date_msg}")
         
-        analysis_term = st.slider("Analysis Term (Years)", 1, 50, 30)
+        analysis_term = st.slider("Analysis Term (Years)", 1, 10, 5)
         
         col1, col2 = st.columns(2)
         j_spot = col1.number_input("3M JIBAR Spot (%)", value=default_j_spot, step=0.01)
