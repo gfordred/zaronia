@@ -993,16 +993,21 @@ class ConvexityAnalyzer:
     
     def _run_simulation(self):
         """
-        Run Monte Carlo simulation of ZARONIA paths.
+        Run Monte Carlo simulation to measure PURE convexity effect.
         
         Methodology:
         ------------
+        To isolate convexity, we simulate rates around the forward JIBAR level,
+        not the current ZARONIA spot. This measures the pure compounding effect.
+        
         1. Generate daily business dates
         2. For each path:
-           - Start at current ZARONIA spot
+           - Start at forward JIBAR rate (mean-reverting center)
            - Add random shocks: dr = σ × √dt × ε
            - Compound daily: Π(1 + r_i × Δt_i)
-        3. Calculate annualized compounded rate per path
+        3. Compare: E[Compounded] vs Simple(Forward JIBAR)
+        
+        This isolates the Jensen's inequality effect from credit spread.
         """
         # Generate business day schedule
         business_days = []
@@ -1019,8 +1024,9 @@ class ConvexityAnalyzer:
         
         num_days = len(business_days)
         
-        # Initial ZARONIA rate (current spot)
-        r0 = self.zaronia_curve.get_zero_rate(0.01)  # Very short tenor as proxy for spot
+        # CRITICAL: Start at forward JIBAR rate to isolate pure convexity
+        # This removes credit spread from the measurement
+        r0 = self.forward_jibar
         
         # Volatility (annualized to daily)
         sigma = self.volatility_bps / 10000.0  # Convert bps to decimal
@@ -1030,14 +1036,19 @@ class ConvexityAnalyzer:
         # Generate random shocks (num_paths × num_days)
         shocks = np.random.normal(0, sigma_daily, (self.num_paths, num_days))
         
-        # Simulate rate paths
+        # Simulate rate paths with mean reversion to forward JIBAR
+        # This is more realistic than pure random walk
+        mean_reversion_speed = 0.1  # Gentle mean reversion
+        
         self.simulated_paths = np.zeros((self.num_paths, num_days))
         self.simulated_paths[:, 0] = r0
         
         for i in range(1, num_days):
-            # Simple Gaussian random walk
-            self.simulated_paths[:, i] = self.simulated_paths[:, i-1] + shocks[:, i]
-            # Floor at zero (rates can't go negative in this simple model)
+            # Mean-reverting process: dr = κ(θ - r)dt + σdW
+            # Simplified: r_new = r_old + κ(forward - r_old)dt + σ√dt × ε
+            mean_reversion = mean_reversion_speed * (r0 - self.simulated_paths[:, i-1]) * dt
+            self.simulated_paths[:, i] = self.simulated_paths[:, i-1] + mean_reversion + shocks[:, i]
+            # Floor at zero
             self.simulated_paths[:, i] = np.maximum(self.simulated_paths[:, i], 0.0001)
         
         # Calculate compounded rate for each path
@@ -2757,39 +2768,48 @@ def main():
         """)
         
         # Educational Panel
-        with st.expander("💡 **Intuition: Why Convexity Matters**", expanded=True):
+        with st.expander("💡 **Intuition: What This Analysis Measures**", expanded=True):
             st.markdown("""
             ### The Fundamental Difference
             
-            **JIBAR 3M (Forward-Looking):**
+            **JIBAR 3M (Forward-Looking - Simple Interest):**
             - ✅ **Fixed at period start** → Deterministic cashflow
             - ✅ **No path risk** → You know exactly what you'll receive
             - ✅ **Simple interest**: CF = N × (F_3M + spread) × τ
             
-            **ZARONIA Compounded (Backward-Looking):**
+            **ZARONIA Compounded (Backward-Looking - Daily Compounding):**
             - ⚠️ **Realized daily** → Path-dependent outcome
             - ⚠️ **Compounded over time** → Non-linear accumulation
             - ⚠️ **Random**: CF = N × [Π(1 + r_i × Δt_i) - 1]
             
+            ### What We're Measuring: PURE Convexity Effect
+            
+            **CRITICAL:** This simulation isolates the **pure compounding effect** by:
+            - Starting both rates at the same level (Forward JIBAR)
+            - Simulating volatility around this level
+            - Measuring: E[Compounded] - Simple(Forward)
+            
+            This removes credit spread from the measurement, showing only Jensen's inequality.
+            
             ### Jensen's Inequality (The Math Behind It)
             
             ```
-            E[Π(1 + r_i·Δt)] > Π(1 + E[r_i]·Δt)
+            E[Π(1 + r_i·Δt)] ≠ Π(1 + E[r_i]·Δt)
             ```
             
-            **Translation:** The expected value of a compounded product is **greater than** the product of expected values.
+            **Translation:** The expected value of a compounded product differs from the product of expected values.
             
             **Why?**
             - Compounding is a **convex function** (exponential)
             - Volatility creates **asymmetric outcomes**
-            - Upside gains from compounding > Downside losses
+            - The difference is the **convexity adjustment**
             
-            ### Practical Impact
+            ### Practical Impact on Conversions
             
-            1. **ZARONIA tends to be LOWER than JIBAR** (credit spread)
-            2. **But realized ZARONIA can be HIGHER than naive expectation** (convexity)
-            3. **Ignoring convexity = mispricing conversions** by several basis points
-            4. **This matters for FRN conversions** where every bp counts
+            1. **Credit Spread**: JIBAR-ZARONIA basis (~200-300 bps) - separate effect
+            2. **Convexity Adjustment**: Pure compounding effect (typically 0-5 bps)
+            3. **Total Conversion Spread**: Must account for BOTH
+            4. **Ignoring convexity = mispricing** by several basis points per year
             """)
         
         st.divider()
@@ -3070,44 +3090,57 @@ def main():
             st.plotly_chart(fig_cvx_vol, width='stretch')
             
             # Key Insights
-            st.markdown("### 🔑 Key Insights")
+            st.markdown("### 🔑 Key Insights & Conversion Impact")
+            
+            # Calculate credit spread for context
+            zaronia_zero = zaronia_curve.get_zero_rate(cvx_tenor_years)
+            credit_spread_bps = (forward_jibar - zaronia_zero) * 10000
             
             col_insight1, col_insight2 = st.columns(2)
             
             with col_insight1:
                 st.markdown(f"""
-                **Why ZARONIA ≠ JIBAR:**
+                **Understanding the Numbers:**
                 
-                1. **Credit Spread**: JIBAR includes bank credit risk (~{(forward_jibar - zaronia_curve.get_zero_rate(cvx_tenor_years))*10000:.1f} bps)
-                2. **Convexity Effect**: Path dependency adds ~{convexity_adj:.2f} bps
-                3. **Total Difference**: {(expected_zaronia - forward_jibar)*10000:+.2f} bps
+                1. **Forward JIBAR**: {forward_jibar*100:.4f}%
+                   - This is the deterministic rate you'd lock in today
+                   - Simple interest: pays exactly this rate
                 
-                **Volatility Impact:**
-                - At σ=0 bps: Convexity ≈ 0 bps (deterministic)
-                - At σ={cvx_volatility} bps: Convexity = {convexity_adj:.2f} bps
-                - Higher volatility → Larger convexity premium
+                2. **Expected Compounded ZARONIA**: {expected_zaronia*100:.4f}%
+                   - Average outcome across {cvx_num_paths:,} simulated paths
+                   - Daily compounding with volatility = {cvx_volatility} bps
+                
+                3. **Convexity Adjustment**: {convexity_adj:+.2f} bps
+                   - **Pure compounding effect** (Jensen's inequality)
+                   - {abs(convexity_adj):.2f} bps {'premium' if convexity_adj > 0 else 'discount'} from path dependency
+                   - Increases with volatility and tenor
+                
+                4. **Credit Spread**: {credit_spread_bps:.1f} bps
+                   - JIBAR-ZARONIA basis (bank credit risk)
+                   - Separate from convexity effect
                 """)
             
             with col_insight2:
                 st.markdown(f"""
-                **Conversion Implications:**
+                **Conversion Pricing Formula:**
                 
-                When converting **JIBAR + spread** to **ZARONIA + spread**:
+                When converting **JIBAR 3M + {50} bps** to **ZARONIA Comp + X bps**:
                 
-                ✅ **Must account for:**
-                - Credit spread differential
-                - Convexity adjustment ({convexity_adj:.2f} bps)
-                - Term premium
-                
-                ⚠️ **Ignoring convexity = mispricing**
-                
-                **Fair Conversion Spread:**
                 ```
-                ZARONIA Spread = JIBAR Spread 
-                                - Credit Basis
-                                + Convexity Adj
-                                + Term Premium
+                Fair ZARONIA Spread (X) = 
+                    Original JIBAR Spread:     {50:>6.1f} bps
+                  - Credit Basis:              {credit_spread_bps:>6.1f} bps
+                  + Convexity Adjustment:      {convexity_adj:>+6.2f} bps
+                  + Term Premium:              {cvx_tenor_years:>6.1f} bps
+                  ─────────────────────────────────────
+                  = Fair Conversion Spread:    {50 - credit_spread_bps + convexity_adj + cvx_tenor_years:>6.1f} bps
                 ```
+                
+                **Key Takeaway:**
+                - Convexity is {"POSITIVE" if convexity_adj > 0 else "NEGATIVE"}: {abs(convexity_adj):.2f} bps
+                - This means compounded ZARONIA is {"HIGHER" if convexity_adj > 0 else "LOWER"} than simple forward
+                - Ignoring this = mispricing by {abs(convexity_adj):.2f} bps
+                - On ZAR {cvx_notional:,.0f} notional = ZAR {abs(convexity_adj) * cvx_notional / 10000 * cvx_tenor_years:,.0f} value
                 """)
             
             # Summary Statistics Table
