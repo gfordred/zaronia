@@ -993,21 +993,18 @@ class ConvexityAnalyzer:
     
     def _run_simulation(self):
         """
-        Run Monte Carlo simulation to measure PURE convexity effect.
+        Simulate PURE convexity effect using constant rate with volatility.
         
         Methodology:
         ------------
-        To isolate convexity, we simulate rates around the forward JIBAR level,
-        not the current ZARONIA spot. This measures the pure compounding effect.
+        To properly measure Jensen's inequality, we simulate rates that are
+        STATIONARY around the forward JIBAR level (no drift).
         
-        1. Generate daily business dates
-        2. For each path:
-           - Start at forward JIBAR rate (mean-reverting center)
-           - Add random shocks: dr = σ × √dt × ε
-           - Compound daily: Π(1 + r_i × Δt_i)
-        3. Compare: E[Compounded] vs Simple(Forward JIBAR)
+        Key insight: If E[r] = forward_jibar, then:
+        - Simple interest pays: forward_jibar × T
+        - Compounded pays: E[Π(1 + r_i × dt)] - 1
         
-        This isolates the Jensen's inequality effect from credit spread.
+        The difference is PURE convexity (no credit spread).
         """
         # Generate business day schedule
         business_days = []
@@ -1024,30 +1021,22 @@ class ConvexityAnalyzer:
         
         num_days = len(business_days)
         
-        # CRITICAL: Start at forward JIBAR rate to isolate pure convexity
-        # This removes credit spread from the measurement
-        r0 = self.forward_jibar
+        # Mean rate = forward JIBAR (no drift)
+        mean_rate = self.forward_jibar
         
         # Volatility (annualized to daily)
         sigma = self.volatility_bps / 10000.0  # Convert bps to decimal
         dt = 1.0 / 365.0  # Daily time step
         sigma_daily = sigma * np.sqrt(dt)
         
-        # Generate random shocks (num_paths × num_days)
-        shocks = np.random.normal(0, sigma_daily, (self.num_paths, num_days))
-        
-        # Simulate rate paths with mean reversion to forward JIBAR
-        # This is more realistic than pure random walk
-        mean_reversion_speed = 0.1  # Gentle mean reversion
-        
+        # Generate rate paths: r_i = mean + σ√dt × ε
+        # Each day is independent, centered on mean (stationary process)
         self.simulated_paths = np.zeros((self.num_paths, num_days))
-        self.simulated_paths[:, 0] = r0
         
-        for i in range(1, num_days):
-            # Mean-reverting process: dr = κ(θ - r)dt + σdW
-            # Simplified: r_new = r_old + κ(forward - r_old)dt + σ√dt × ε
-            mean_reversion = mean_reversion_speed * (r0 - self.simulated_paths[:, i-1]) * dt
-            self.simulated_paths[:, i] = self.simulated_paths[:, i-1] + mean_reversion + shocks[:, i]
+        for i in range(num_days):
+            # Independent draws each day, centered on forward JIBAR
+            shocks = np.random.normal(0, sigma_daily, self.num_paths)
+            self.simulated_paths[:, i] = mean_rate + shocks
             # Floor at zero
             self.simulated_paths[:, i] = np.maximum(self.simulated_paths[:, i], 0.0001)
         
@@ -1056,11 +1045,10 @@ class ConvexityAnalyzer:
         
         for path_idx in range(self.num_paths):
             compound_factor = 1.0
-            for day_idx in range(num_days - 1):
+            for day_idx in range(num_days):
                 r_i = self.simulated_paths[path_idx, day_idx]
-                # Days to next business day (simplified as 1 for daily)
-                n_i = 1
-                compound_factor *= (1 + r_i * n_i / 365.0)
+                # Compound daily
+                compound_factor *= (1 + r_i / 365.0)
             
             # Annualize the compounded rate
             total_days = (self.end_date - self.start_date).days
