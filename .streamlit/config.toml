@@ -1,0 +1,21 @@
+[theme]
+# Deep Green New Zealand Forest Theme - Professional Bank Grade (Dark Mode)
+
+# Primary color - Vibrant forest green for accents
+primaryColor = "#4ade80"
+
+# Background color - Pure black for professional dark mode
+backgroundColor = "#000000"
+
+# Secondary background - Dark forest green
+secondaryBackgroundColor = "#1a2e1a"
+
+# Text color - Light gray/white for excellent readability on black
+textColor = "#e5e5e5"
+
+# Font - Professional sans-serif
+font = "sans serif"
+
+[server]
+# Enable file watcher for development
+fileWatcherType = "auto"

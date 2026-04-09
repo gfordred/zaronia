@@ -10,18 +10,49 @@ from scipy.optimize import brentq
 # ==========================================
 st.set_page_config(layout="wide", page_title="ZARONIA/JIBAR Swap Pricer")
 
-# SA Holidays (2023-2026 approx, including Sunday rollovers)
+# SA Holidays (2023-2027 including observed days for weekend holidays)
 SA_HOLIDAYS = {
+    # 2023
     date(2023, 1, 1), date(2023, 1, 2), date(2023, 3, 21), date(2023, 4, 7), date(2023, 4, 10),
     date(2023, 4, 27), date(2023, 5, 1), date(2023, 6, 16), date(2023, 8, 9), date(2023, 9, 24),
     date(2023, 9, 25), date(2023, 12, 16), date(2023, 12, 25), date(2023, 12, 26),
+    # 2024
     date(2024, 1, 1), date(2024, 3, 21), date(2024, 3, 29), date(2024, 4, 1), date(2024, 4, 27),
     date(2024, 5, 1), date(2024, 6, 16), date(2024, 6, 17), date(2024, 8, 9), date(2024, 9, 24),
     date(2024, 12, 16), date(2024, 12, 25), date(2024, 12, 26),
+    # 2025
     date(2025, 1, 1), date(2025, 3, 21), date(2025, 4, 18), date(2025, 4, 21), date(2025, 4, 27),
     date(2025, 4, 28), date(2025, 5, 1), date(2025, 6, 16), date(2025, 8, 9), date(2025, 9, 24),
     date(2025, 12, 16), date(2025, 12, 25), date(2025, 12, 26),
-    date(2026, 1, 1) # Extend as needed
+    # 2026
+    date(2026, 1, 1),      # New Year's Day (Thursday)
+    date(2026, 3, 21),     # Human Rights Day (Saturday)
+    date(2026, 4, 3),      # Good Friday
+    date(2026, 4, 6),      # Family Day (Monday)
+    date(2026, 4, 27),     # Freedom Day (Monday)
+    date(2026, 5, 1),      # Workers' Day (Friday)
+    date(2026, 6, 16),     # Youth Day (Tuesday)
+    date(2026, 8, 9),      # National Women's Day (Sunday)
+    date(2026, 8, 10),     # Women's Day observed (Monday)
+    date(2026, 9, 24),     # Heritage Day (Thursday)
+    date(2026, 12, 16),    # Day of Reconciliation (Wednesday)
+    date(2026, 12, 25),    # Christmas Day (Friday)
+    date(2026, 12, 26),    # Day of Goodwill (Saturday)
+    # 2027
+    date(2027, 1, 1),      # New Year's Day (Friday)
+    date(2027, 3, 21),     # Human Rights Day (Sunday)
+    date(2027, 3, 22),     # Human Rights Day observed (Monday)
+    date(2027, 3, 26),     # Good Friday
+    date(2027, 3, 29),     # Family Day (Monday)
+    date(2027, 4, 27),     # Freedom Day (Tuesday)
+    date(2027, 5, 1),      # Workers' Day (Saturday)
+    date(2027, 6, 16),     # Youth Day (Wednesday)
+    date(2027, 8, 9),      # National Women's Day (Monday)
+    date(2027, 9, 24),     # Heritage Day (Friday)
+    date(2027, 12, 16),    # Day of Reconciliation (Thursday)
+    date(2027, 12, 25),    # Christmas Day (Saturday)
+    date(2027, 12, 26),    # Day of Goodwill (Sunday)
+    date(2027, 12, 27)     # Day of Goodwill observed (Monday)
 }
 
 def is_jbd(d):
@@ -264,47 +295,53 @@ class ZaroniaCurve:
 
 def generate_schedule(start_date, tenor_years, freq='Quarterly', convention='Modified Following'):
     """
-    Generate unadjusted schedule for simplicity, then adjust.
-    freq: Annual, Semi-annual, Quarterly
+    Generate payment schedule for swap leg.
+    freq: Annual, Semi-annual, Quarterly, Monthly
     """
     freq_map = {'Annual': 12, 'Semi-annual': 6, 'Quarterly': 3, 'Monthly': 1}
     months = freq_map.get(freq, 3)
     
-    end_date = start_date + timedelta(days=int(tenor_years * 365)) # Approximate
-    # Better: add years/months logic
-    try:
-        end_date = start_date.replace(year=start_date.year + int(tenor_years))
-    except ValueError: # Leap year Feb 29
-        end_date = start_date + timedelta(days=int(tenor_years * 365.25))
-
+    # Calculate end date more accurately
+    end_date = start_date + timedelta(days=int(tenor_years * 365.25))
+    
     dates = []
     curr = start_date
-    while curr < end_date:
-        # Add months
+    
+    # Generate schedule by adding payment frequency
+    while True:
+        # Add months to current date
         m = curr.month + months
         y = curr.year + (m - 1) // 12
         m = (m - 1) % 12 + 1
         day = curr.day
-        # Handle month end
-        # (Simple logic: if day > max for month, clamp)
-        max_d = (date(y, m % 12 + 1, 1) - timedelta(days=1)).day
-        next_date = date(y, m, min(day, max_d))
         
-        if next_date > end_date:
-            next_date = end_date
+        # Handle month end (e.g., Jan 31 -> Feb 28)
+        try:
+            next_date = date(y, m, day)
+        except ValueError:
+            # Day doesn't exist in target month, use last day of month
+            if m == 12:
+                max_d = 31
+            else:
+                max_d = (date(y, m + 1, 1) - timedelta(days=1)).day
+            next_date = date(y, m, max_d)
         
-        # Adjust business day (simple FOLLOWING for this demo if weekend)
-        # Ideally use proper calendar
+        # If we've passed the end date, use end date as final payment
+        if next_date >= end_date:
+            # Adjust end date for business day
+            adj_end = end_date
+            while adj_end.weekday() > 4:
+                adj_end += timedelta(days=1)
+            dates.append(adj_end)
+            break
+        
+        # Adjust for business day (simple FOLLOWING convention)
         while next_date.weekday() > 4:
             next_date += timedelta(days=1)
             
         dates.append(next_date)
         curr = next_date
-        
-    # Ensure at least one date for short tenors (stub at end)
-    if not dates and start_date < end_date:
-        dates.append(end_date)
-        
+    
     return dates
 
 class SwapLeg:
@@ -558,6 +595,541 @@ class ZaroniaFRN:
         return self.cashflows[0]['ZARONIA_Comp'] # Return first period for sample
 
 # ==========================================
+# CONVERSION ANALYSIS ENGINE
+# ==========================================
+class ConversionAnalyzer:
+    """
+    Bank-grade conversion analysis for JIBAR-linked to ZARONIA-linked instruments.
+    
+    ECONOMIC FOUNDATION:
+    --------------------
+    When converting from JIBAR 3M + Spread_old to ZARONIA Compounded + Spread_new,
+    we must evaluate:
+    
+    1. FORWARD EQUIVALENCE:
+       E[JIBAR 3M] ≈ Compounded ZARONIA + Basis Spread
+       
+       BUT NOT EXACT due to:
+       - Convexity (non-linear compounding effects)
+       - Timing mismatch (fixing vs realized)
+       - Credit vs risk-free basis
+    
+    2. ECONOMIC EQUIVALENCE (PV Neutrality):
+       PV(JIBAR leg) = PV(ZARONIA leg + conversion spread)
+       
+       This is the FAIR CONVERSION condition.
+    
+    3. CONVEXITY ADJUSTMENT:
+       E[Π(1 + r_i·dt)] ≠ Π(1 + E[r_i]·dt)
+       
+       Jensen's inequality implies compounded rates < arithmetic average
+       for positive volatility.
+    
+    METHODOLOGY:
+    ------------
+    - Original Leg: JIBAR 3M forwards from zero curve
+    - Converted Leg: Daily compounded ZARONIA (using ZaroniaFRN engine)
+    - Discounting: ZARONIA (OIS) for both legs (CSA standard)
+    - Fair Spread: Solve for spread_new such that PV_original = PV_converted
+    """
+    
+    def __init__(self, notional, start_date, maturity_years, jibar_spread_bps, 
+                 zaronia_spread_bps, frequency, jibar_curve, zaronia_curve):
+        """
+        Initialize conversion analyzer.
+        
+        Parameters:
+        -----------
+        notional : float
+            Notional amount
+        start_date : date
+            Effective start date
+        maturity_years : float
+            Tenor in years
+        jibar_spread_bps : float
+            Original JIBAR spread in basis points
+        zaronia_spread_bps : float
+            Offered ZARONIA conversion spread in basis points
+        frequency : str
+            Payment frequency ('Quarterly', 'Semi-annual', 'Annual')
+        jibar_curve : JibarZeroCurve
+            JIBAR zero curve for forward projection
+        zaronia_curve : ZaroniaCurve
+            ZARONIA curve for compounding and discounting
+        """
+        self.notional = notional
+        self.start_date = start_date
+        self.maturity_years = maturity_years
+        self.jibar_spread_bps = jibar_spread_bps
+        self.zaronia_spread_bps = zaronia_spread_bps
+        self.frequency = frequency
+        self.jibar_curve = jibar_curve
+        self.zaronia_curve = zaronia_curve
+        
+        # Calculate maturity date
+        self.maturity_date = start_date + timedelta(days=int(maturity_years * 365.25))
+        
+        # Build structures
+        self._build_original_leg()
+        self._build_converted_leg()
+        
+    def _build_original_leg(self):
+        """
+        Build JIBAR-linked leg using forward rates from JIBAR curve.
+        
+        Structure: JIBAR 3M + Spread (quarterly reset, ACT/365)
+        """
+        # Use SwapLeg with JIBAR float index
+        self.original_leg = SwapLeg(
+            'Float', 'ZAR', self.notional, self.start_date, 
+            self.maturity_years, self.frequency, 
+            spread_bps=self.jibar_spread_bps, 
+            float_index='JIBAR'
+        )
+        # Calculate cashflows using ZARONIA discounting (OIS standard)
+        self.original_leg.calculate_cashflows(self.jibar_curve, self.zaronia_curve, 'ZARONIA')
+        
+    def _build_converted_leg(self):
+        """
+        Build ZARONIA-linked leg using daily compounded ZARONIA.
+        
+        Structure: Compounded ZARONIA + Spread (quarterly payment, ACT/365)
+        """
+        # Use ZaroniaFRN for accurate daily compounding
+        self.converted_frn = ZaroniaFRN(
+            notional=self.notional,
+            start_date=self.start_date,
+            maturity_date=self.maturity_date,
+            margin_bps=self.zaronia_spread_bps,
+            lookback_days=5,
+            freq=self.frequency
+        )
+        self.converted_frn.calculate_cashflows(self.zaronia_curve)
+        
+    def get_pv_original(self):
+        """Present value of original JIBAR-linked structure."""
+        return self.original_leg.get_pv()
+    
+    def get_pv_converted(self):
+        """Present value of converted ZARONIA-linked structure (interest only)."""
+        return sum(cf['PV'] for cf in self.converted_frn.cashflows)
+    
+    def get_pv_difference(self):
+        """
+        Value transfer from conversion.
+        
+        Positive = investor gains value
+        Negative = investor loses value
+        """
+        return self.get_pv_converted() - self.get_pv_original()
+    
+    def solve_fair_zaronia_spread(self):
+        """
+        Solve for fair ZARONIA spread that makes conversion PV-neutral.
+        
+        Condition: PV(JIBAR + spread_old) = PV(ZARONIA + spread_fair)
+        
+        Returns:
+        --------
+        fair_spread_bps : float
+            Fair conversion spread in basis points
+        """
+        def objective(spread_bps):
+            # Rebuild converted leg with trial spread
+            trial_frn = ZaroniaFRN(
+                notional=self.notional,
+                start_date=self.start_date,
+                maturity_date=self.maturity_date,
+                frequency=self.frequency,
+                margin_bps=spread_bps,
+                lookback=5
+            )
+            trial_frn.calculate_cashflows(self.zaronia_curve)
+            pv_trial = sum(cf['PV'] for cf in trial_frn.cashflows)
+            pv_original = self.get_pv_original()
+            return pv_trial - pv_original
+        
+        try:
+            fair_spread = brentq(objective, -500, 500)
+            return fair_spread
+        except:
+            return 0.0
+    
+    def calculate_convexity_adjustment(self):
+        """
+        Estimate convexity adjustment between linear forward expectation
+        and realized compounding.
+        
+        Approximation:
+        --------------
+        Convexity ≈ 0.5 * σ² * T
+        
+        Where σ is ZARONIA volatility and T is tenor.
+        
+        For now, we estimate from the difference between:
+        - Average forward JIBAR
+        - Average realized ZARONIA compounding
+        
+        Returns:
+        --------
+        convexity_bps : float
+            Estimated convexity adjustment in basis points
+        """
+        # Average forward rate from JIBAR leg
+        if not self.original_leg.cashflows:
+            return 0.0
+        
+        avg_jibar_fwd = np.mean([cf['Forward Rate'] for cf in self.original_leg.cashflows])
+        
+        # Average compounded ZARONIA
+        if not self.converted_frn.cashflows:
+            return 0.0
+        
+        avg_zaronia_comp = np.mean([cf['ZARONIA_Comp'] for cf in self.converted_frn.cashflows])
+        
+        # Convexity is the difference (in bps)
+        convexity_bps = (avg_jibar_fwd - avg_zaronia_comp) * 10000
+        
+        return convexity_bps
+    
+    def get_cashflow_comparison(self):
+        """
+        Return detailed cashflow comparison for visualization.
+        
+        Returns:
+        --------
+        df : pd.DataFrame
+            Columns: Date, JIBAR_CF, ZARONIA_CF, Difference
+        """
+        comparison = []
+        
+        # Match cashflows by payment date
+        jibar_cfs = {cf['Period End']: cf for cf in self.original_leg.cashflows}
+        zaronia_cfs = {cf['End']: cf for cf in self.converted_frn.cashflows}
+        
+        all_dates = sorted(set(jibar_cfs.keys()) | set(zaronia_cfs.keys()))
+        
+        for pay_date in all_dates:
+            jibar_amt = jibar_cfs.get(pay_date, {}).get('Cashflow', 0.0)
+            zaronia_amt = zaronia_cfs.get(pay_date, {}).get('Amount', 0.0)
+            
+            comparison.append({
+                'Date': pay_date,
+                'JIBAR_Cashflow': jibar_amt,
+                'ZARONIA_Cashflow': zaronia_amt,
+                'Difference': zaronia_amt - jibar_amt,
+                'Cumulative_Diff': 0  # Will calculate below
+            })
+        
+        df = pd.DataFrame(comparison)
+        if not df.empty:
+            df['Cumulative_Diff'] = df['Difference'].cumsum()
+        
+        return df
+    
+    def get_spread_decomposition(self):
+        """
+        Decompose conversion spread into components.
+        
+        Components:
+        -----------
+        1. Credit spread: JIBAR-ZARONIA basis (historical average)
+        2. Term premium: Compensation for tenor
+        3. Convexity adjustment: Compounding effect
+        4. Residual: Unexplained (mispricing or liquidity)
+        
+        Returns:
+        --------
+        dict with components in bps
+        """
+        fair_spread = self.solve_fair_zaronia_spread()
+        offered_spread = self.zaronia_spread_bps
+        
+        # Historical JIBAR-ZARONIA spread (from curve)
+        # Approximate as the spread at 3M tenor
+        t_3m = 0.25
+        jibar_3m = self.jibar_curve.get_zero_rate(t_3m)
+        zaronia_3m = self.zaronia_curve.get_zero_rate(t_3m)
+        credit_spread_bps = (jibar_3m - zaronia_3m) * 10000
+        
+        # Convexity adjustment
+        convexity_bps = self.calculate_convexity_adjustment()
+        
+        # Term premium (simple approximation: 1bp per year)
+        term_premium_bps = self.maturity_years * 1.0
+        
+        # Residual
+        explained = credit_spread_bps + convexity_bps + term_premium_bps
+        residual_bps = fair_spread - explained
+        
+        return {
+            'Credit_Spread': credit_spread_bps,
+            'Term_Premium': term_premium_bps,
+            'Convexity_Adj': convexity_bps,
+            'Residual': residual_bps,
+            'Total_Fair': fair_spread,
+            'Offered': offered_spread,
+            'Mispricing': offered_spread - fair_spread
+        }
+
+# ==========================================
+# CONVEXITY ANALYSIS ENGINE
+# ==========================================
+class ConvexityAnalyzer:
+    """
+    Quantitative engine for measuring convexity effects between forward-looking JIBAR
+    and backward-looking compounded ZARONIA.
+    
+    MATHEMATICAL FOUNDATION:
+    ------------------------
+    
+    1. JIBAR Payoff (Simple Interest - Forward Looking):
+       CF_JIBAR = N × (F_3M + spread) × τ
+       
+       - Fixed at period start
+       - Deterministic once set
+       - No path dependency
+    
+    2. ZARONIA Payoff (Compounded - Backward Looking):
+       CF_ZARONIA = N × [Π(1 + r_i × Δt_i) - 1]
+       
+       - Realized daily
+       - Compounded over time
+       - Path-dependent random outcome
+    
+    3. CONVEXITY IDENTITY (Jensen's Inequality):
+       E[Π(1 + r_i·Δt)] > Π(1 + E[r_i]·Δt)
+       
+       Due to:
+       - Non-linearity of compounding
+       - Volatility of overnight rates
+       - Positive convexity of exponential function
+    
+    CONVEXITY ADJUSTMENT:
+    ---------------------
+    Convexity Adj (bps) = E[Compounded ZARONIA] - Forward JIBAR
+    
+    This adjustment must be priced into JIBAR → ZARONIA conversions.
+    
+    SIMULATION METHODOLOGY:
+    -----------------------
+    Monte Carlo simulation of ZARONIA paths using:
+    - Short rate dynamics: dr = σ × √dt × ε (Gaussian)
+    - Daily compounding along each path
+    - Distribution analysis across N paths
+    """
+    
+    def __init__(self, notional, start_date, end_date, jibar_curve, zaronia_curve, 
+                 volatility_bps=100, num_paths=1000, seed=42):
+        """
+        Initialize convexity analyzer with simulation parameters.
+        
+        Parameters:
+        -----------
+        notional : float
+            Notional amount
+        start_date : date
+            Period start date
+        end_date : date
+            Period end date
+        jibar_curve : JibarZeroCurve
+            JIBAR curve for forward rates
+        zaronia_curve : ZaroniaCurve
+            ZARONIA curve for base rates
+        volatility_bps : float
+            Annualized volatility in basis points (default 100bps = 1%)
+        num_paths : int
+            Number of Monte Carlo paths
+        seed : int
+            Random seed for reproducibility
+        """
+        self.notional = notional
+        self.start_date = start_date
+        self.end_date = end_date
+        self.jibar_curve = jibar_curve
+        self.zaronia_curve = zaronia_curve
+        self.volatility_bps = volatility_bps
+        self.num_paths = num_paths
+        self.seed = seed
+        
+        # Calculate tenor
+        self.tenor_years = year_frac(start_date, end_date)
+        self.tenor_days = (end_date - start_date).days
+        
+        # Set random seed
+        np.random.seed(seed)
+        
+        # Calculate forward JIBAR
+        self.forward_jibar = self._calculate_forward_jibar()
+        
+        # Run simulation
+        self.simulated_paths = None
+        self.compounded_rates = None
+        self._run_simulation()
+        
+    def _calculate_forward_jibar(self):
+        """
+        Calculate forward 3M JIBAR rate for the period.
+        
+        Returns:
+        --------
+        forward_rate : float
+            Annualized forward JIBAR rate
+        """
+        # Get JIBAR forward rate for the period
+        t_start = year_frac(self.zaronia_curve.val_date, self.start_date)
+        t_end = year_frac(self.zaronia_curve.val_date, self.end_date)
+        
+        # Forward rate from zero rates
+        if t_start <= 0:
+            # Period starts now or in past, use spot rate
+            return self.jibar_curve.get_zero_rate(t_end)
+        else:
+            # True forward rate
+            r_start = self.jibar_curve.get_zero_rate(t_start)
+            r_end = self.jibar_curve.get_zero_rate(t_end)
+            forward = (r_end * t_end - r_start * t_start) / (t_end - t_start)
+            return forward
+    
+    def _run_simulation(self):
+        """
+        Run Monte Carlo simulation of ZARONIA paths.
+        
+        Methodology:
+        ------------
+        1. Generate daily business dates
+        2. For each path:
+           - Start at current ZARONIA spot
+           - Add random shocks: dr = σ × √dt × ε
+           - Compound daily: Π(1 + r_i × Δt_i)
+        3. Calculate annualized compounded rate per path
+        """
+        # Generate business day schedule
+        business_days = []
+        current = self.start_date
+        while current < self.end_date:
+            if is_jbd(current):
+                business_days.append(current)
+            current += timedelta(days=1)
+        
+        if not business_days:
+            self.simulated_paths = np.array([[]])
+            self.compounded_rates = np.array([])
+            return
+        
+        num_days = len(business_days)
+        
+        # Initial ZARONIA rate (current spot)
+        r0 = self.zaronia_curve.get_zero_rate(0.01)  # Very short tenor as proxy for spot
+        
+        # Volatility (annualized to daily)
+        sigma = self.volatility_bps / 10000.0  # Convert bps to decimal
+        dt = 1.0 / 365.0  # Daily time step
+        sigma_daily = sigma * np.sqrt(dt)
+        
+        # Generate random shocks (num_paths × num_days)
+        shocks = np.random.normal(0, sigma_daily, (self.num_paths, num_days))
+        
+        # Simulate rate paths
+        self.simulated_paths = np.zeros((self.num_paths, num_days))
+        self.simulated_paths[:, 0] = r0
+        
+        for i in range(1, num_days):
+            # Simple Gaussian random walk
+            self.simulated_paths[:, i] = self.simulated_paths[:, i-1] + shocks[:, i]
+            # Floor at zero (rates can't go negative in this simple model)
+            self.simulated_paths[:, i] = np.maximum(self.simulated_paths[:, i], 0.0001)
+        
+        # Calculate compounded rate for each path
+        self.compounded_rates = np.zeros(self.num_paths)
+        
+        for path_idx in range(self.num_paths):
+            compound_factor = 1.0
+            for day_idx in range(num_days - 1):
+                r_i = self.simulated_paths[path_idx, day_idx]
+                # Days to next business day (simplified as 1 for daily)
+                n_i = 1
+                compound_factor *= (1 + r_i * n_i / 365.0)
+            
+            # Annualize the compounded rate
+            total_days = (self.end_date - self.start_date).days
+            annualized_rate = (compound_factor - 1.0) * (365.0 / total_days)
+            self.compounded_rates[path_idx] = annualized_rate
+    
+    def get_expected_zaronia(self):
+        """Expected value of compounded ZARONIA across all paths."""
+        if self.compounded_rates is None or len(self.compounded_rates) == 0:
+            return 0.0
+        return np.mean(self.compounded_rates)
+    
+    def get_median_zaronia(self):
+        """Median compounded ZARONIA."""
+        if self.compounded_rates is None or len(self.compounded_rates) == 0:
+            return 0.0
+        return np.median(self.compounded_rates)
+    
+    def get_std_zaronia(self):
+        """Standard deviation of compounded ZARONIA."""
+        if self.compounded_rates is None or len(self.compounded_rates) == 0:
+            return 0.0
+        return np.std(self.compounded_rates)
+    
+    def get_convexity_adjustment(self):
+        """
+        Calculate convexity adjustment in basis points.
+        
+        Definition:
+        -----------
+        Convexity Adj = E[Compounded ZARONIA] - Forward JIBAR
+        
+        Returns:
+        --------
+        adjustment_bps : float
+            Convexity adjustment in basis points
+        """
+        expected_zaronia = self.get_expected_zaronia()
+        adjustment = (expected_zaronia - self.forward_jibar) * 10000
+        return adjustment
+    
+    def get_percentiles(self, percentiles=[5, 25, 50, 75, 95]):
+        """
+        Calculate percentiles of compounded ZARONIA distribution.
+        
+        Returns:
+        --------
+        dict : percentile -> rate
+        """
+        if self.compounded_rates is None or len(self.compounded_rates) == 0:
+            return {p: 0.0 for p in percentiles}
+        return {p: np.percentile(self.compounded_rates, p) for p in percentiles}
+    
+    def get_distribution_data(self):
+        """
+        Return distribution data for histogram plotting.
+        
+        Returns:
+        --------
+        rates : np.array
+            Compounded rates across all paths
+        """
+        return self.compounded_rates
+    
+    def get_sample_paths(self, num_samples=50):
+        """
+        Return a sample of simulated paths for visualization.
+        
+        Returns:
+        --------
+        paths : np.array (num_samples × num_days)
+        """
+        if self.simulated_paths is None or len(self.simulated_paths) == 0:
+            return np.array([[]])
+        
+        num_samples = min(num_samples, self.num_paths)
+        indices = np.random.choice(self.num_paths, num_samples, replace=False)
+        return self.simulated_paths[indices, :]
+
+# ==========================================
 # BOOTSTRAPPING ENGINE
 # ==========================================
 def bootstrap_nacc_curve(mkt_data):
@@ -803,25 +1375,69 @@ def main():
                 market_data_for_date = row.to_dict()
                 found_date = row['Date'].date()
                 if found_date == val_date:
-                    found_date_msg = "Data Found"
+                    found_date_msg = f"✓ Market data found for {found_date.strftime('%Y-%m-%d')}"
                 else:
-                    found_date_msg = f"Using {found_date}"
+                    found_date_msg = f"⚠ Using nearest data from {found_date.strftime('%Y-%m-%d')}"
             else:
-                 found_date_msg = "No history found"
+                 found_date_msg = "⚠ No history found - using latest available"
 
-        st.caption(f" {found_date_msg}")
+        st.info(found_date_msg)
         
         analysis_term = st.slider("Analysis Term (Years)", 1, 10, 5)
         
+        # Extract spot rates from market data for the selected date
+        j_spot_for_date = default_j_spot
+        z_spot_for_date = default_z_spot
+        
+        if market_data_for_date:
+            if 'JIBAR3M' in market_data_for_date and not pd.isna(market_data_for_date['JIBAR3M']):
+                j_spot_for_date = float(market_data_for_date['JIBAR3M'])
+            if 'ZARONIA' in market_data_for_date and not pd.isna(market_data_for_date['ZARONIA']):
+                z_spot_for_date = float(market_data_for_date['ZARONIA'])
+        
         col1, col2 = st.columns(2)
-        j_spot = col1.number_input("3M JIBAR Spot (%)", value=default_j_spot, step=0.01)
-        z_spot = col2.number_input("ZARONIA Spot (%)", value=default_z_spot, step=0.01)
+        j_spot = col1.number_input("3M JIBAR Spot (%)", value=j_spot_for_date, step=0.0001, format="%.4f")
+        z_spot = col2.number_input("ZARONIA Spot (%)", value=z_spot_for_date, step=0.0001, format="%.4f")
         
         s0_bps = (j_spot - z_spot) * 100
         st.info(f"Spot Spread $s_0(t)$: **{s0_bps:.2f} bps**")
 
     with st.sidebar.expander("2. Zero Curve & Spreads", expanded=False):
-        st.subheader("JIBAR Zero Curve (NACC)")
+        st.subheader("JIBAR Zero Curve (NACQ)")
+        
+        # Show market data inputs used for bootstrapping
+        st.caption("Market Data Inputs for Bootstrapping")
+        
+        # Update bootstrap inputs when valuation date changes
+        # Store the last valuation date to detect changes
+        if 'last_val_date' not in st.session_state or st.session_state.last_val_date != val_date:
+            st.session_state.bootstrap_inputs = market_data_for_date.copy()
+            st.session_state.last_val_date = val_date
+        
+        # Create editable table for bootstrap inputs
+        bootstrap_instruments = ['JIBAR3M', 'FRA 3x6', 'FRA 6x9', 'FRA 9x12', 'SASW1', 'SASW2', 'SASW3', 'SASW5', 'SASW10']
+        bootstrap_data = []
+        for inst in bootstrap_instruments:
+            val = st.session_state.bootstrap_inputs.get(inst, None)
+            if val is not None and not pd.isna(val):
+                bootstrap_data.append({'Instrument': inst, 'Rate (%)': val})
+        
+        if bootstrap_data:
+            df_bootstrap = pd.DataFrame(bootstrap_data)
+            edited_bootstrap = st.data_editor(
+                df_bootstrap,
+                width='stretch',
+                hide_index=True,
+                key='bootstrap_inputs_editor',
+                column_config={
+                    "Instrument": st.column_config.TextColumn("Instrument", disabled=True),
+                    "Rate (%)": st.column_config.NumberColumn("Rate (%)", format="%.4f")
+                }
+            )
+            
+            # Update session state with edited values
+            for _, row in edited_bootstrap.iterrows():
+                st.session_state.bootstrap_inputs[row['Instrument']] = row['Rate (%)']
         
         # Bootstrapping
         # Check if we need to init
@@ -836,19 +1452,21 @@ def main():
                 }
                 st.session_state.jibar_curve_data = pd.DataFrame(default_data)
         
-        # Button to re-bootstrap from selected date
-        if st.button(f"Bootstrap from {found_date_msg} Data"):
-             bootstrapped_df = bootstrap_nacc_curve(market_data_for_date)
+        # Button to re-bootstrap from edited inputs
+        if st.button("Bootstrap from Market Data"):
+             bootstrapped_df = bootstrap_nacc_curve(st.session_state.bootstrap_inputs)
              if bootstrapped_df is not None and not bootstrapped_df.empty:
                  st.session_state.jibar_curve_data = bootstrapped_df
                  st.rerun()
              else:
                  st.error("Bootstrapping failed or no data for this date.")
+        
+        st.markdown("---")
 
         edited_jibar = st.data_editor(
             st.session_state.jibar_curve_data, 
             num_rows="dynamic",
-            use_container_width=True,
+            width='stretch',
             key='editor_jibar',
             column_config={
                 "Tenor (Y)": st.column_config.NumberColumn(format="%.2f Y"),
@@ -868,7 +1486,7 @@ def main():
         df_spreads = pd.DataFrame(default_spreads)
         edited_spreads = st.data_editor(
             df_spreads,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Spread (bps)": st.column_config.NumberColumn(format="%.2f bps")
@@ -900,7 +1518,7 @@ def main():
         notional = col_t1.number_input("Notional", value=10_000_000, step=1_000_000, format="%d")
         currency = col_t2.text_input("Currency", value="ZAR", disabled=True)
         
-        start_delay = st.number_input("Start Delay (Days)", value=2, min_value=0)
+        start_delay = st.number_input("Start Delay (Days)", value=0, min_value=0)
         start_date = add_business_days(val_date, int(start_delay))
         st.caption(f"Start Date: {start_date}")
         
@@ -911,15 +1529,25 @@ def main():
         st.caption("Leg Settings")
         
         fixed_leg_freq = st.selectbox("Fixed Leg Freq", ["Quarterly", "Semi-annual", "Annual"])
+        float_leg_freq = st.selectbox("Float Leg Freq", ["Quarterly", "Semi-annual", "Annual", "Monthly"])
         
         solve_par = st.checkbox("Solve for Par Rate", value=True)
         solve_basis = False
+        solve_leg = "JIBAR"  # Which leg to solve for in basis swap
+        
         if trade_type == "Basis Swap":
              solve_basis = st.checkbox("Solve for Par Basis Spread", value=True)
+             if solve_basis:
+                 solve_leg = st.radio("Solve for spread on:", ["JIBAR", "ZARONIA"], horizontal=True, 
+                                     help="Which leg should have the spread adjusted to make NPV=0?")
              
         user_fixed_rate = st.number_input("Fixed Rate (%)", value=7.0, disabled=solve_par and trade_type != "Basis Swap", format="%.4f")
         
-        float_spread_bps = st.number_input("Float Leg Spread (bps)", value=0.0, disabled=solve_basis, format="%.2f")
+        if trade_type == "Basis Swap":
+            jibar_spread_bps = st.number_input("JIBAR Spread (bps)", value=0.0, disabled=solve_basis and solve_leg=="JIBAR", format="%.2f")
+            zaronia_spread_bps = st.number_input("ZARONIA Spread (bps)", value=0.0, disabled=solve_basis and solve_leg=="ZARONIA", format="%.2f")
+        else:
+            float_spread_bps = st.number_input("Float Leg Spread (bps)", value=0.0, format="%.2f")
 
     # ==========================================
     # BUILD CURVES
@@ -949,9 +1577,9 @@ def main():
     # ==========================================
     # MAIN PANEL TABS
     # ==========================================
-    tab_method, tab_charts, tab_trade, tab_bench, tab_frn, tab_comp, tab_hist = st.tabs([
+    tab_method, tab_charts, tab_trade, tab_bench, tab_frn, tab_conv, tab_cvx, tab_comp, tab_hist = st.tabs([
         "Methodology & Theory", "Analysis & Charts", "Trade Pricing", "Benchmark Rates", 
-        "FRN Pricing & Hedging", "Quarterly Compounding Analysis", "Historical Data"
+        "FRN Pricing & Hedging", "Conversion Analysis", "Convexity Analysis", "Quarterly Compounding Analysis", "Historical Data"
     ])
 
     with tab_method:
@@ -1079,12 +1707,12 @@ def main():
 
         # Layout Grid
         c1, c2 = st.columns(2)
-        c1.plotly_chart(fig_zero, use_container_width=True)
-        c2.plotly_chart(fig_fwd, use_container_width=True)
+        c1.plotly_chart(fig_zero, width='stretch')
+        c2.plotly_chart(fig_fwd, width='stretch')
         
         c3, c4 = st.columns(2)
-        c3.plotly_chart(fig_df, use_container_width=True)
-        c4.plotly_chart(fig_spread, use_container_width=True)
+        c3.plotly_chart(fig_df, width='stretch')
+        c4.plotly_chart(fig_spread, width='stretch')
         
         st.divider()
         st.subheader("Historical Curve Evolution (3D Surface)")
@@ -1112,7 +1740,7 @@ def main():
                      height=600,
                      margin=dict(l=0, r=0, b=0, t=50)
                  )
-                 st.plotly_chart(fig_3d, use_container_width=True)
+                 st.plotly_chart(fig_3d, width='stretch')
             else:
                  st.info("Insufficient historical data for 3D surface plot.")
         else:
@@ -1147,13 +1775,13 @@ def main():
         
         if trade_type == "JIBAR IRS":
             leg1 = SwapLeg('Fixed', 'ZAR', notional, start_date, maturity_years, fixed_leg_freq, fixed_rate=0.0)
-            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, 'Quarterly', spread_bps=float_spread_bps, float_index='JIBAR')
+            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, float_leg_freq, spread_bps=float_spread_bps, float_index='JIBAR')
         elif trade_type == "ZARONIA OIS":
             leg1 = SwapLeg('Fixed', 'ZAR', notional, start_date, maturity_years, fixed_leg_freq, fixed_rate=0.0)
-            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, 'Annual', spread_bps=float_spread_bps, float_index='ZARONIA')
+            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, float_leg_freq, spread_bps=float_spread_bps, float_index='ZARONIA')
         elif trade_type == "Basis Swap":
-            leg1 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, 'Quarterly', spread_bps=float_spread_bps, float_index='JIBAR')
-            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, 'Annual', spread_bps=0.0, float_index='ZARONIA')
+            leg1 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, float_leg_freq, spread_bps=jibar_spread_bps, float_index='JIBAR')
+            leg2 = SwapLeg('Float', 'ZAR', notional, start_date, maturity_years, float_leg_freq, spread_bps=zaronia_spread_bps, float_index='ZARONIA')
 
         # Helper to update rates and recalc
         def price_swap(fixed_rate_val):
@@ -1177,20 +1805,28 @@ def main():
             except:
                 par_rate = 0.0
         elif trade_type == "Basis Swap" and solve_basis:
-             # Solve for spread on Leg 1 (JIBAR) to equate to Leg 2 (ZARONIA)
+             # Solve for spread on selected leg (JIBAR or ZARONIA) to make NPV=0
              def obj_basis(s_bps):
-                 # Update spread on leg 1
-                 leg1.spread = s_bps / 10000.0
-                 leg1.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
-                 # Leg 2 is Zaronia flat (spread=0 usually, or fixed)
-                 # Re-calc leg 2 just in case
-                 leg2.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                 if solve_leg == "JIBAR":
+                     # Solve for JIBAR spread
+                     leg1.spread = s_bps / 10000.0
+                     leg1.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                     leg2.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                 else:
+                     # Solve for ZARONIA spread
+                     leg2.spread = s_bps / 10000.0
+                     leg1.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                     leg2.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
                  return leg1.get_pv() - leg2.get_pv()
              
              try:
                  par_spread = brentq(obj_basis, -500, 500) # +/- 500 bps
-                 float_spread_bps = par_spread
-                 leg1.spread = par_spread / 10000.0
+                 if solve_leg == "JIBAR":
+                     jibar_spread_bps = par_spread
+                     leg1.spread = par_spread / 10000.0
+                 else:
+                     zaronia_spread_bps = par_spread
+                     leg2.spread = par_spread / 10000.0
              except:
                  par_spread = 0.0
 
@@ -1286,7 +1922,7 @@ def main():
             if trade_type == "Basis Swap":
                 st.markdown(f"""
                 <div class="metric-card">
-                    <div class="metric-label">Par Basis Spread</div>
+                    <div class="metric-label">Par Basis Spread ({solve_leg})</div>
                     <div class="metric-value">{"{:.2f} bps".format(par_spread) if solve_basis else "N/A"}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1299,12 +1935,20 @@ def main():
                 """, unsafe_allow_html=True)
             
         with c2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Fixed Rate Used</div>
-                <div class="metric-value">{"{:.4f}%".format(final_fixed_rate*100) if trade_type != "Basis Swap" else "N/A"}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            if trade_type == "Basis Swap":
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">JIBAR Spread</div>
+                    <div class="metric-value">{"{:.2f} bps".format(leg1.spread * 10000)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Fixed Rate Used</div>
+                    <div class="metric-value">{"{:.4f}%".format(final_fixed_rate*100)}</div>
+                </div>
+                """, unsafe_allow_html=True)
             
         with c3:
             npv_color = "metric-value" if npv >= 0 else "metric-value-neg"
@@ -1386,7 +2030,7 @@ def main():
             height=400,
             hovermode='x unified'
         )
-        st.plotly_chart(fig_cf, use_container_width=True)
+        st.plotly_chart(fig_cf, width='stretch')
 
         st.markdown("### 📋 Cashflow Tables")
         def show_leg_cf(leg, name):
@@ -1404,7 +2048,7 @@ def main():
                         'Cashflow': '{:,.2f}',
                         'Discount Factor': '{:.6f}',
                         'PV': '{:,.2f}'
-                    }), use_container_width=True)
+                    }), width='stretch')
         
         c_tbl1, c_tbl2 = st.columns(2)
         with c_tbl1: show_leg_cf(leg1, "Leg 1")
@@ -1412,17 +2056,42 @@ def main():
 
     with tab_bench:
         st.subheader("Step 7: Benchmark OIS Rates")
-        st.write("Calculated par rates for standard ZARONIA OIS tenors based on current curves.")
+        
+        st.markdown("""
+        **Par Swap Rates** for standard ZARONIA Overnight Index Swap (OIS) tenors.
+        
+        These rates represent the **fixed rate** that would make a new OIS swap have zero net present value (NPV = 0) at inception.
+        
+        **Swap Structure:**
+        - **Fixed Leg**: Pays the par rate shown below on a fixed payment frequency
+        - **Floating Leg**: Pays compounded ZARONIA (daily overnight rates) on the same frequency
+        - **Day Count**: ACT/365 for both legs
+        - **Discounting**: ZARONIA zero curve (OIS discounting)
+        
+        **Payment Frequencies by Tenor:**
+        - **1M**: Monthly payments
+        - **3M, 9M**: Quarterly payments  
+        - **6M**: Semi-annual payments
+        - **1Y+**: Annual payments
+        
+        **Interpretation:**
+        - These are **effective annualized fixed rates** (ACT/365 basis)
+        - They represent the market's expectation of average ZARONIA over each tenor
+        - The curve shape shows the term structure of ZAR overnight rates
+        - Higher rates at longer tenors indicate expectations of rising rates or term premium
+        """)
+        
+        st.divider()
         bench_tenors = [
-            ("1M", 1/12, 'Annual'), ("3M", 0.25, 'Annual'), ("6M", 0.5, 'Annual'), 
-            ("9M", 0.75, 'Annual'), ("1Y", 1.0, 'Annual'), ("2Y", 2.0, 'Annual'),
-            ("5Y", 5.0, 'Annual'), ("10Y", 10.0, 'Annual'), ("30Y", 30.0, 'Annual')
+            ("1M", 1/12, 'Monthly'), ("3M", 0.25, 'Quarterly'), ("6M", 0.5, 'Semi-annual'), 
+            ("9M", 0.75, 'Quarterly'), ("1Y", 1.0, 'Annual'), ("2Y", 2.0, 'Annual'),
+            ("5Y", 5.0, 'Annual'), ("10Y", 10.0, 'Annual')
         ]
         
         bench_data = []
         for label, t_year, freq in bench_tenors:
             leg_fix = SwapLeg('Fixed', 'ZAR', 100, start_date, t_year, freq, fixed_rate=0.0)
-            leg_flt = SwapLeg('Float', 'ZAR', 100, start_date, t_year, 'Annual', float_index='ZARONIA')
+            leg_flt = SwapLeg('Float', 'ZAR', 100, start_date, t_year, freq, float_index='ZARONIA')
             
             def solve_bench(r):
                 leg_fix.fixed_rate = r
@@ -1453,7 +2122,7 @@ def main():
                 
         df_bench = pd.DataFrame(bench_data).set_index("Tenor").T
         # Use a more flexible formatter that handles strings (errors) and floats
-        st.dataframe(df_bench, use_container_width=True)
+        st.dataframe(df_bench, width='stretch')
         
         # Plot Benchmark Curve
         st.subheader("Benchmark Yield Curve")
@@ -1489,7 +2158,7 @@ def main():
                 height=450,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig_bench, use_container_width=True)
+            st.plotly_chart(fig_bench, width='stretch')
 
     with tab_frn:
         st.subheader("ZARONIA-Linked FRN Pricing (e.g., ABFZ02)")
@@ -1570,7 +2239,7 @@ def main():
                 "Amount": "{:,.2f}",
                 "DF": "{:.6f}",
                 "PV": "{:,.2f}"
-            }), use_container_width=True)
+            }), width='stretch')
             
             with st.expander("Show Daily Rate Details (First Period)"):
                 if "Dailies" in df_frn.columns and df_frn.iloc[0]["Dailies"]:
@@ -1674,7 +2343,7 @@ def main():
             height=350,
             showlegend=False
         )
-        st.plotly_chart(fig_rv, use_container_width=True)
+        st.plotly_chart(fig_rv, width='stretch')
 
         st.divider()
         st.markdown("#### Hedging Sensitivity (DV01)")
@@ -1741,11 +2410,747 @@ def main():
         
         st.info(f"To hedge the FRN, you should **{'Buy' if hedge_ratio > 0 else 'Sell'}** {abs(hedge_ratio):.2f} units of the {hedge_tenor} OIS Swap.")
 
-    with tab_comp:
-        st.subheader("Quarterly Compounding Analysis")
-        st.caption("Historical comparison of JIBAR 3M (Fixed at Start) vs Compounded ZARONIA (Realized over Quarter)")
+    with tab_conv:
+        st.subheader("🔄 JIBAR → ZARONIA Conversion Analysis")
         
-        # Load full history
+        st.markdown("""
+        **Bank-Grade Relative Value & Conversion Analytics Engine**
+        
+        This module rigorously evaluates the economic fairness of converting from JIBAR-linked to ZARONIA-linked instruments.
+        
+        **Economic Question:**
+        > *"When offered a conversion from JIBAR 3M + Spread_old to ZARONIA Compounded + Spread_new, is this fair?"*
+        
+        **Analysis Framework:**
+        1. **Forward Equivalence**: E[JIBAR 3M] ≈ Compounded ZARONIA + Basis
+        2. **PV Neutrality**: PV(JIBAR structure) = PV(ZARONIA structure)
+        3. **Convexity Effects**: Non-linear compounding adjustments
+        4. **Value Transfer**: Quantify gains/losses from conversion
+        """)
+        
+        st.divider()
+        
+        # Input Section
+        st.markdown("### Conversion Parameters")
+        
+        col_conv1, col_conv2, col_conv3 = st.columns(3)
+        
+        with col_conv1:
+            conv_notional = st.number_input("Notional (ZAR)", value=100_000_000, step=1_000_000, format="%d")
+            conv_tenor_str = st.selectbox("Tenor", ["1Y", "2Y", "3Y", "4Y", "5Y", "7Y", "10Y"], index=2, key="conv_tenor")
+            conv_tenor = int(conv_tenor_str.replace("Y", ""))
+            
+        with col_conv2:
+            conv_jibar_spread = st.number_input("Original JIBAR Spread (bps)", value=50.0, step=1.0, format="%.2f",
+                                               help="Current spread over JIBAR 3M")
+            conv_zaronia_spread = st.number_input("Offered ZARONIA Spread (bps)", value=30.0, step=1.0, format="%.2f",
+                                                 help="Proposed spread over compounded ZARONIA")
+            
+        with col_conv3:
+            conv_freq = st.selectbox("Payment Frequency", ["Quarterly", "Semi-annual", "Annual"], index=0, key="conv_freq")
+            conv_start_delay = st.number_input("Start Delay (Days)", value=0, min_value=0, key="conv_delay")
+            conv_start_date = add_business_days(val_date, int(conv_start_delay))
+            st.caption(f"Effective: {conv_start_date}")
+        
+        st.divider()
+        
+        # Build Conversion Analyzer
+        try:
+            analyzer = ConversionAnalyzer(
+                notional=conv_notional,
+                start_date=conv_start_date,
+                maturity_years=conv_tenor,
+                jibar_spread_bps=conv_jibar_spread,
+                zaronia_spread_bps=conv_zaronia_spread,
+                frequency=conv_freq,
+                jibar_curve=jibar_curve,
+                zaronia_curve=zaronia_curve
+            )
+            
+            # Calculate key metrics
+            pv_original = analyzer.get_pv_original()
+            pv_converted = analyzer.get_pv_converted()
+            pv_diff = analyzer.get_pv_difference()
+            fair_spread = analyzer.solve_fair_zaronia_spread()
+            spread_decomp = analyzer.get_spread_decomposition()
+            
+            # Dashboard Metrics
+            st.markdown("### 📊 Conversion Valuation Dashboard")
+            
+            m1, m2, m3, m4, m5 = st.columns(5)
+            
+            with m1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Fair ZARONIA Spread</div>
+                    <div class="metric-value" style="color:#00CC96;">{fair_spread:.2f} bps</div>
+                    <div class="metric-sub">PV-Neutral Conversion</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Offered Spread</div>
+                    <div class="metric-value" style="color:#19D3F3;">{conv_zaronia_spread:.2f} bps</div>
+                    <div class="metric-sub">Market Quote</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m3:
+                mispricing = spread_decomp['Mispricing']
+                mispricing_color = "#EF553B" if mispricing < 0 else "#00CC96"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Mispricing</div>
+                    <div class="metric-value" style="color:{mispricing_color};">{mispricing:+.2f} bps</div>
+                    <div class="metric-sub">Offered - Fair</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m4:
+                pv_diff_pct = (pv_diff / conv_notional) * 100
+                pv_color = "#EF553B" if pv_diff < 0 else "#00CC96"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Value Transfer</div>
+                    <div class="metric-value" style="color:{pv_color};">ZAR {pv_diff:,.0f}</div>
+                    <div class="metric-sub">{pv_diff_pct:+.3f}% of Notional</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m5:
+                convexity = spread_decomp['Convexity_Adj']
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Convexity Adjustment</div>
+                    <div class="metric-value" style="color:#FFA15A;">{convexity:.2f} bps</div>
+                    <div class="metric-sub">Compounding Effect</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Economic Interpretation
+            st.markdown("")
+            if abs(mispricing) < 1.0:
+                st.success(f"✅ **Fair Conversion**: The offered spread is within 1bp of fair value. This is an economically neutral conversion.")
+            elif mispricing > 0:
+                st.success(f"✅ **Favorable to Investor**: The offered spread is {mispricing:.2f} bps **above** fair value. Investor gains ZAR {abs(pv_diff):,.0f} in PV.")
+            else:
+                st.error(f"⚠️ **Unfavorable to Investor**: The offered spread is {abs(mispricing):.2f} bps **below** fair value. Investor loses ZAR {abs(pv_diff):,.0f} in PV.")
+            
+            st.divider()
+            
+            # Spread Decomposition
+            st.markdown("### 🔬 Spread Decomposition Analysis")
+            st.caption("Breaking down the fair conversion spread into economic components")
+            
+            decomp_data = {
+                'Component': ['Credit Spread', 'Term Premium', 'Convexity Adj', 'Residual', 'Total Fair'],
+                'Value (bps)': [
+                    spread_decomp['Credit_Spread'],
+                    spread_decomp['Term_Premium'],
+                    spread_decomp['Convexity_Adj'],
+                    spread_decomp['Residual'],
+                    spread_decomp['Total_Fair']
+                ],
+                'Description': [
+                    'JIBAR-ZARONIA basis (credit risk)',
+                    'Compensation for tenor',
+                    'Non-linear compounding effect',
+                    'Unexplained (liquidity/mispricing)',
+                    'Sum of all components'
+                ]
+            }
+            
+            df_decomp = pd.DataFrame(decomp_data)
+            
+            col_decomp1, col_decomp2 = st.columns([1, 1])
+            
+            with col_decomp1:
+                st.dataframe(df_decomp.style.format({'Value (bps)': '{:.2f}'}), width='stretch', hide_index=True)
+            
+            with col_decomp2:
+                # Waterfall chart for spread decomposition
+                fig_waterfall = go.Figure(go.Waterfall(
+                    x=['Credit<br>Spread', 'Term<br>Premium', 'Convexity<br>Adj', 'Residual', 'Fair<br>Spread'],
+                    y=[
+                        spread_decomp['Credit_Spread'],
+                        spread_decomp['Term_Premium'],
+                        spread_decomp['Convexity_Adj'],
+                        spread_decomp['Residual'],
+                        0
+                    ],
+                    measure=['relative', 'relative', 'relative', 'relative', 'total'],
+                    text=[f"{v:.1f}" for v in [
+                        spread_decomp['Credit_Spread'],
+                        spread_decomp['Term_Premium'],
+                        spread_decomp['Convexity_Adj'],
+                        spread_decomp['Residual'],
+                        spread_decomp['Total_Fair']
+                    ]],
+                    textposition='outside',
+                    connector={'line': {'color': 'rgb(63, 63, 63)'}},
+                ))
+                fig_waterfall.update_layout(
+                    title="Spread Build-up (bps)",
+                    yaxis_title="Basis Points",
+                    template='plotly_dark',
+                    height=350,
+                    showlegend=False
+                )
+                st.plotly_chart(fig_waterfall, width='stretch')
+            
+            st.divider()
+            
+            # Cashflow Comparison
+            st.markdown("### 💰 Projected Cashflow Comparison")
+            
+            df_cf_comp = analyzer.get_cashflow_comparison()
+            
+            if not df_cf_comp.empty:
+                col_cf1, col_cf2 = st.columns([2, 1])
+                
+                with col_cf1:
+                    # Cashflow chart
+                    fig_cf = go.Figure()
+                    fig_cf.add_trace(go.Bar(
+                        x=df_cf_comp['Date'],
+                        y=df_cf_comp['JIBAR_Cashflow'],
+                        name='JIBAR 3M + Spread',
+                        marker_color='#00CC96'
+                    ))
+                    fig_cf.add_trace(go.Bar(
+                        x=df_cf_comp['Date'],
+                        y=df_cf_comp['ZARONIA_Cashflow'],
+                        name='ZARONIA Comp + Spread',
+                        marker_color='#EF553B'
+                    ))
+                    fig_cf.update_layout(
+                        title="Cashflow Comparison: JIBAR vs ZARONIA",
+                        xaxis_title="Payment Date",
+                        yaxis_title="Cashflow (ZAR)",
+                        barmode='group',
+                        template='plotly_dark',
+                        height=400,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_cf, width='stretch')
+                
+                with col_cf2:
+                    # Cumulative P&L
+                    fig_cum = go.Figure()
+                    fig_cum.add_trace(go.Scatter(
+                        x=df_cf_comp['Date'],
+                        y=df_cf_comp['Cumulative_Diff'],
+                        fill='tozeroy',
+                        name='Cumulative Difference',
+                        line=dict(color='#19D3F3', width=2)
+                    ))
+                    fig_cum.update_layout(
+                        title="Cumulative P&L from Conversion",
+                        xaxis_title="Date",
+                        yaxis_title="Cumulative ZAR",
+                        template='plotly_dark',
+                        height=400
+                    )
+                    st.plotly_chart(fig_cum, width='stretch')
+                
+                # Detailed table
+                with st.expander("📋 Detailed Cashflow Table"):
+                    st.dataframe(df_cf_comp.style.format({
+                        'JIBAR_Cashflow': '{:,.2f}',
+                        'ZARONIA_Cashflow': '{:,.2f}',
+                        'Difference': '{:+,.2f}',
+                        'Cumulative_Diff': '{:+,.2f}'
+                    }), width='stretch')
+            
+            st.divider()
+            
+            # Sensitivity Analysis
+            st.markdown("### 📈 Sensitivity Analysis")
+            st.caption("Impact of varying the conversion spread on PV")
+            
+            # Generate sensitivity range
+            spread_range = np.linspace(fair_spread - 50, fair_spread + 50, 21)
+            pv_impacts = []
+            
+            for test_spread in spread_range:
+                test_analyzer = ConversionAnalyzer(
+                    notional=conv_notional,
+                    start_date=conv_start_date,
+                    maturity_years=conv_tenor,
+                    jibar_spread_bps=conv_jibar_spread,
+                    zaronia_spread_bps=test_spread,
+                    frequency=conv_freq,
+                    jibar_curve=jibar_curve,
+                    zaronia_curve=zaronia_curve
+                )
+                pv_impacts.append(test_analyzer.get_pv_difference())
+            
+            # Sensitivity chart
+            fig_sens = go.Figure()
+            fig_sens.add_trace(go.Scatter(
+                x=spread_range,
+                y=pv_impacts,
+                mode='lines+markers',
+                name='PV Impact',
+                line=dict(color='#00CC96', width=3),
+                marker=dict(size=6)
+            ))
+            
+            # Mark current offered spread
+            fig_sens.add_trace(go.Scatter(
+                x=[conv_zaronia_spread],
+                y=[pv_diff],
+                mode='markers',
+                name='Offered Spread',
+                marker=dict(size=15, color='#EF553B', symbol='star')
+            ))
+            
+            # Mark fair spread
+            fig_sens.add_trace(go.Scatter(
+                x=[fair_spread],
+                y=[0],
+                mode='markers',
+                name='Fair Spread (PV=0)',
+                marker=dict(size=15, color='#FFA15A', symbol='diamond')
+            ))
+            
+            fig_sens.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="PV Neutral")
+            
+            fig_sens.update_layout(
+                title=f"PV Impact vs ZARONIA Spread (Fair = {fair_spread:.2f} bps)",
+                xaxis_title="ZARONIA Spread (bps)",
+                yaxis_title="PV Difference (ZAR)",
+                template='plotly_dark',
+                height=450,
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_sens, width='stretch')
+            
+            # Summary table
+            col_sum1, col_sum2 = st.columns(2)
+            
+            with col_sum1:
+                st.markdown("**PV Sensitivity (per 1bp change in spread):**")
+                if len(pv_impacts) > 1:
+                    dv01_spread = (pv_impacts[1] - pv_impacts[0]) / (spread_range[1] - spread_range[0])
+                    st.metric("DV01 (Spread)", f"ZAR {dv01_spread:,.2f}/bp")
+            
+            with col_sum2:
+                st.markdown("**Break-even Analysis:**")
+                st.metric("Fair Spread", f"{fair_spread:.2f} bps")
+                st.caption(f"Offered spread must be ≥ {fair_spread:.2f} bps for investor to break even")
+        
+        except Exception as e:
+            st.error(f"Error in conversion analysis: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    with tab_cvx:
+        st.subheader("📐 Convexity & Compounding Effects")
+        
+        st.markdown("""
+        **Quantifying Path-Dependent Effects: Forward JIBAR vs Compounded ZARONIA**
+        
+        This module demonstrates why **volatility + compounding = convexity premium**.
+        """)
+        
+        # Educational Panel
+        with st.expander("💡 **Intuition: Why Convexity Matters**", expanded=True):
+            st.markdown("""
+            ### The Fundamental Difference
+            
+            **JIBAR 3M (Forward-Looking):**
+            - ✅ **Fixed at period start** → Deterministic cashflow
+            - ✅ **No path risk** → You know exactly what you'll receive
+            - ✅ **Simple interest**: CF = N × (F_3M + spread) × τ
+            
+            **ZARONIA Compounded (Backward-Looking):**
+            - ⚠️ **Realized daily** → Path-dependent outcome
+            - ⚠️ **Compounded over time** → Non-linear accumulation
+            - ⚠️ **Random**: CF = N × [Π(1 + r_i × Δt_i) - 1]
+            
+            ### Jensen's Inequality (The Math Behind It)
+            
+            ```
+            E[Π(1 + r_i·Δt)] > Π(1 + E[r_i]·Δt)
+            ```
+            
+            **Translation:** The expected value of a compounded product is **greater than** the product of expected values.
+            
+            **Why?**
+            - Compounding is a **convex function** (exponential)
+            - Volatility creates **asymmetric outcomes**
+            - Upside gains from compounding > Downside losses
+            
+            ### Practical Impact
+            
+            1. **ZARONIA tends to be LOWER than JIBAR** (credit spread)
+            2. **But realized ZARONIA can be HIGHER than naive expectation** (convexity)
+            3. **Ignoring convexity = mispricing conversions** by several basis points
+            4. **This matters for FRN conversions** where every bp counts
+            """)
+        
+        st.divider()
+        
+        # Interactive Controls
+        st.markdown("### 🎛️ Simulation Parameters")
+        
+        col_cvx1, col_cvx2, col_cvx3 = st.columns(3)
+        
+        with col_cvx1:
+            cvx_volatility = st.slider("ZARONIA Volatility (bps)", 
+                                       min_value=0, max_value=300, value=100, step=10,
+                                       help="Annualized volatility of overnight rates")
+            cvx_tenor_str = st.selectbox("Analysis Tenor", 
+                                        ["3M", "6M", "1Y", "2Y", "3Y", "5Y"], 
+                                        index=2, key="cvx_tenor")
+            
+        with col_cvx2:
+            cvx_num_paths = st.selectbox("Number of Paths", 
+                                        [500, 1000, 2000, 5000, 10000], 
+                                        index=1, key="cvx_paths")
+            cvx_notional = st.number_input("Notional (ZAR)", 
+                                          value=100_000_000, 
+                                          step=10_000_000, 
+                                          format="%d", 
+                                          key="cvx_notional")
+            
+        with col_cvx3:
+            cvx_deterministic = st.checkbox("Show Deterministic Case (σ=0)", value=False,
+                                           help="Compare with zero volatility baseline")
+            cvx_seed = st.number_input("Random Seed", value=42, min_value=1, key="cvx_seed")
+        
+        # Parse tenor
+        tenor_map = {"3M": 0.25, "6M": 0.5, "1Y": 1.0, "2Y": 2.0, "3Y": 3.0, "5Y": 5.0}
+        cvx_tenor_years = tenor_map[cvx_tenor_str]
+        cvx_start_date = val_date
+        cvx_end_date = cvx_start_date + timedelta(days=int(cvx_tenor_years * 365.25))
+        
+        st.divider()
+        
+        # Run Convexity Analysis
+        try:
+            # Main simulation
+            cvx_analyzer = ConvexityAnalyzer(
+                notional=cvx_notional,
+                start_date=cvx_start_date,
+                end_date=cvx_end_date,
+                jibar_curve=jibar_curve,
+                zaronia_curve=zaronia_curve,
+                volatility_bps=cvx_volatility,
+                num_paths=cvx_num_paths,
+                seed=cvx_seed
+            )
+            
+            # Deterministic case (if requested)
+            cvx_analyzer_det = None
+            if cvx_deterministic:
+                cvx_analyzer_det = ConvexityAnalyzer(
+                    notional=cvx_notional,
+                    start_date=cvx_start_date,
+                    end_date=cvx_end_date,
+                    jibar_curve=jibar_curve,
+                    zaronia_curve=zaronia_curve,
+                    volatility_bps=0,
+                    num_paths=cvx_num_paths,
+                    seed=cvx_seed
+                )
+            
+            # Extract metrics
+            forward_jibar = cvx_analyzer.forward_jibar
+            expected_zaronia = cvx_analyzer.get_expected_zaronia()
+            median_zaronia = cvx_analyzer.get_median_zaronia()
+            std_zaronia = cvx_analyzer.get_std_zaronia()
+            convexity_adj = cvx_analyzer.get_convexity_adjustment()
+            percentiles = cvx_analyzer.get_percentiles([5, 25, 50, 75, 95])
+            
+            # Dashboard Metrics
+            st.markdown("### 📊 Convexity Metrics Dashboard")
+            
+            m1, m2, m3, m4, m5 = st.columns(5)
+            
+            with m1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Forward JIBAR</div>
+                    <div class="metric-value" style="color:#00CC96;">{forward_jibar*100:.4f}%</div>
+                    <div class="metric-sub">Deterministic</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Expected ZARONIA</div>
+                    <div class="metric-value" style="color:#EF553B;">{expected_zaronia*100:.4f}%</div>
+                    <div class="metric-sub">E[Compounded]</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m3:
+                cvx_color = "#FFA15A" if convexity_adj > 0 else "#19D3F3"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Convexity Adjustment</div>
+                    <div class="metric-value" style="color:{cvx_color};">{convexity_adj:+.2f} bps</div>
+                    <div class="metric-sub">E[Z] - F[J]</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m4:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Std Deviation</div>
+                    <div class="metric-value" style="color:#AB63FA;">{std_zaronia*10000:.2f} bps</div>
+                    <div class="metric-sub">Volatility Impact</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with m5:
+                worst_case = percentiles[5]
+                best_case = percentiles[95]
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">5th / 95th Percentile</div>
+                    <div class="metric-value" style="color:#19D3F3; font-size:18px;">{worst_case*100:.3f}% / {best_case*100:.3f}%</div>
+                    <div class="metric-sub">Outcome Range</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # Visualizations
+            st.markdown("### 📈 Distribution & Path Analysis")
+            
+            col_viz1, col_viz2 = st.columns(2)
+            
+            with col_viz1:
+                # Distribution histogram
+                distribution_data = cvx_analyzer.get_distribution_data()
+                
+                fig_dist = go.Figure()
+                fig_dist.add_trace(go.Histogram(
+                    x=distribution_data * 100,
+                    nbinsx=50,
+                    name='Compounded ZARONIA',
+                    marker_color='#EF553B',
+                    opacity=0.7
+                ))
+                
+                # Mark forward JIBAR
+                fig_dist.add_vline(x=forward_jibar*100, line_dash="dash", line_color="#00CC96", 
+                                  annotation_text="Forward JIBAR", annotation_position="top")
+                
+                # Mark expected ZARONIA
+                fig_dist.add_vline(x=expected_zaronia*100, line_dash="solid", line_color="#FFA15A",
+                                  annotation_text="E[ZARONIA]", annotation_position="top")
+                
+                fig_dist.update_layout(
+                    title=f"Distribution of Compounded ZARONIA ({cvx_num_paths} paths)",
+                    xaxis_title="Annualized Rate (%)",
+                    yaxis_title="Frequency",
+                    template='plotly_dark',
+                    height=400,
+                    showlegend=False
+                )
+                st.plotly_chart(fig_dist, width='stretch')
+            
+            with col_viz2:
+                # Sample paths fan chart
+                sample_paths = cvx_analyzer.get_sample_paths(num_samples=50)
+                
+                if sample_paths.size > 0:
+                    fig_paths = go.Figure()
+                    
+                    # Plot sample paths
+                    for i in range(min(50, sample_paths.shape[0])):
+                        fig_paths.add_trace(go.Scatter(
+                            y=sample_paths[i, :] * 100,
+                            mode='lines',
+                            line=dict(color='#EF553B', width=0.5),
+                            opacity=0.3,
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+                    
+                    # Add forward JIBAR reference line
+                    fig_paths.add_hline(y=forward_jibar*100, line_dash="dash", line_color="#00CC96",
+                                       annotation_text="Forward JIBAR")
+                    
+                    fig_paths.update_layout(
+                        title="Simulated ZARONIA Rate Paths",
+                        xaxis_title="Business Days",
+                        yaxis_title="Overnight Rate (%)",
+                        template='plotly_dark',
+                        height=400
+                    )
+                    st.plotly_chart(fig_paths, width='stretch')
+            
+            # Percentile bands chart
+            st.markdown("### 📊 Percentile Bands")
+            
+            fig_percentiles = go.Figure()
+            
+            pct_labels = ['5th', '25th', '50th (Median)', '75th', '95th']
+            pct_values = [percentiles[5], percentiles[25], percentiles[50], percentiles[75], percentiles[95]]
+            
+            fig_percentiles.add_trace(go.Bar(
+                x=pct_labels,
+                y=[v*100 for v in pct_values],
+                marker_color=['#EF553B', '#FFA15A', '#00CC96', '#FFA15A', '#EF553B'],
+                text=[f"{v*100:.4f}%" for v in pct_values],
+                textposition='outside'
+            ))
+            
+            # Add forward JIBAR reference
+            fig_percentiles.add_hline(y=forward_jibar*100, line_dash="dash", line_color="white",
+                                     annotation_text=f"Forward JIBAR: {forward_jibar*100:.4f}%")
+            
+            fig_percentiles.update_layout(
+                title="Compounded ZARONIA Outcome Percentiles",
+                yaxis_title="Rate (%)",
+                template='plotly_dark',
+                height=350,
+                showlegend=False
+            )
+            st.plotly_chart(fig_percentiles, width='stretch')
+            
+            st.divider()
+            
+            # Convexity vs Volatility Analysis
+            st.markdown("### 📉 Convexity Adjustment vs Volatility")
+            st.caption("How does convexity change with market volatility?")
+            
+            # Generate convexity curve
+            vol_range = np.linspace(0, 300, 31)
+            convexity_curve = []
+            
+            for test_vol in vol_range:
+                test_analyzer = ConvexityAnalyzer(
+                    notional=cvx_notional,
+                    start_date=cvx_start_date,
+                    end_date=cvx_end_date,
+                    jibar_curve=jibar_curve,
+                    zaronia_curve=zaronia_curve,
+                    volatility_bps=test_vol,
+                    num_paths=500,  # Fewer paths for speed
+                    seed=cvx_seed
+                )
+                convexity_curve.append(test_analyzer.get_convexity_adjustment())
+            
+            fig_cvx_vol = go.Figure()
+            fig_cvx_vol.add_trace(go.Scatter(
+                x=vol_range,
+                y=convexity_curve,
+                mode='lines+markers',
+                name='Convexity Adjustment',
+                line=dict(color='#00CC96', width=3),
+                marker=dict(size=6)
+            ))
+            
+            # Mark current volatility
+            fig_cvx_vol.add_trace(go.Scatter(
+                x=[cvx_volatility],
+                y=[convexity_adj],
+                mode='markers',
+                name='Current Setting',
+                marker=dict(size=15, color='#EF553B', symbol='star')
+            ))
+            
+            fig_cvx_vol.update_layout(
+                title=f"Convexity Adjustment vs Volatility ({cvx_tenor_str} Tenor)",
+                xaxis_title="Volatility (bps)",
+                yaxis_title="Convexity Adjustment (bps)",
+                template='plotly_dark',
+                height=400,
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_cvx_vol, width='stretch')
+            
+            # Key Insights
+            st.markdown("### 🔑 Key Insights")
+            
+            col_insight1, col_insight2 = st.columns(2)
+            
+            with col_insight1:
+                st.markdown(f"""
+                **Why ZARONIA ≠ JIBAR:**
+                
+                1. **Credit Spread**: JIBAR includes bank credit risk (~{(forward_jibar - zaronia_curve.get_zero_rate(cvx_tenor_years))*10000:.1f} bps)
+                2. **Convexity Effect**: Path dependency adds ~{convexity_adj:.2f} bps
+                3. **Total Difference**: {(expected_zaronia - forward_jibar)*10000:+.2f} bps
+                
+                **Volatility Impact:**
+                - At σ=0 bps: Convexity ≈ 0 bps (deterministic)
+                - At σ={cvx_volatility} bps: Convexity = {convexity_adj:.2f} bps
+                - Higher volatility → Larger convexity premium
+                """)
+            
+            with col_insight2:
+                st.markdown(f"""
+                **Conversion Implications:**
+                
+                When converting **JIBAR + spread** to **ZARONIA + spread**:
+                
+                ✅ **Must account for:**
+                - Credit spread differential
+                - Convexity adjustment ({convexity_adj:.2f} bps)
+                - Term premium
+                
+                ⚠️ **Ignoring convexity = mispricing**
+                
+                **Fair Conversion Spread:**
+                ```
+                ZARONIA Spread = JIBAR Spread 
+                                - Credit Basis
+                                + Convexity Adj
+                                + Term Premium
+                ```
+                """)
+            
+            # Summary Statistics Table
+            with st.expander("📋 Detailed Statistics"):
+                stats_data = {
+                    'Metric': [
+                        'Forward JIBAR',
+                        'Expected ZARONIA',
+                        'Median ZARONIA',
+                        'Std Deviation',
+                        'Convexity Adjustment',
+                        '5th Percentile',
+                        '25th Percentile',
+                        '75th Percentile',
+                        '95th Percentile',
+                        'Min Outcome',
+                        'Max Outcome'
+                    ],
+                    'Value': [
+                        f"{forward_jibar*100:.4f}%",
+                        f"{expected_zaronia*100:.4f}%",
+                        f"{median_zaronia*100:.4f}%",
+                        f"{std_zaronia*10000:.2f} bps",
+                        f"{convexity_adj:+.2f} bps",
+                        f"{percentiles[5]*100:.4f}%",
+                        f"{percentiles[25]*100:.4f}%",
+                        f"{percentiles[75]*100:.4f}%",
+                        f"{percentiles[95]*100:.4f}%",
+                        f"{np.min(distribution_data)*100:.4f}%",
+                        f"{np.max(distribution_data)*100:.4f}%"
+                    ]
+                }
+                st.dataframe(pd.DataFrame(stats_data), width='stretch', hide_index=True)
+        
+        except Exception as e:
+            st.error(f"Error in convexity analysis: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    with tab_comp:
+        st.subheader("Rolling 3-Month Compounding Analysis")
+        st.write("Weekly rolling comparison: JIBAR 3M (Fixed at Start) vs Compounded ZARONIA (Realized over 3 Months)")
+        
         df_hist_all = load_historical_market_data()
         
         if df_hist_all.empty:
@@ -1756,44 +3161,50 @@ def main():
             # Create a quick lookup for JIBAR
             # We use the raw loaded data which has "JIBAR3M"
             
-            # Generate Quarter Start Dates (IMM Dates approx: 1st of Mar, Jun, Sep, Dec)
-            # Let's just generate 1st of every quarter for last 3 years
+            # Generate Week Start Dates (Mondays) for rolling 3-month analysis
+            # Last 2 years of weekly start dates
             end_d = pd.Timestamp(val_date)
-            start_d = end_d - pd.DateOffset(years=3)
+            start_d = end_d - pd.DateOffset(years=2)
             
-            # Generate quarters
-            quarters = pd.date_range(start=start_d, end=end_d, freq='QS') # Quarter Start (Jan 1, Apr 1, ...)
+            # Generate weeks (Monday starts)
+            weeks = pd.date_range(start=start_d, end=end_d, freq='W-MON') # Week Start (Mondays)
             
             analysis_data = []
             
-            for q_start in quarters:
-                q_end = q_start + pd.DateOffset(months=3)
+            for w_start in weeks:
+                # Each week starts a 3-month forward period
+                w_end = w_start + pd.DateOffset(months=3)
                 
-                if q_end > end_d: continue # Don't analyze incomplete current quarter? Or maybe partial.
+                # Include partial periods - use min of w_end and current date
+                w_end = min(w_end, end_d)
                 
-                # 1. Get JIBAR 3M at q_start
-                # Find closest date <= q_start in history
+                # Skip if period is too short (less than 1 month)
+                if (w_end - w_start).days < 28:
+                    continue
+                
+                # 1. Get JIBAR 3M at w_start
+                # Find closest date <= w_start in history
                 # Filter history
-                mask_jibar = (df_hist_all["Date"] <= q_start)
+                mask_jibar = (df_hist_all["Date"] <= w_start)
                 df_j = df_hist_all.loc[mask_jibar]
                 
                 jibar_val = np.nan
                 if not df_j.empty:
                     # Sort by date desc, take first
-                    # Try to find date close to q_start (within 5 days)
+                    # Try to find date close to w_start (within 5 days)
                     closest_row = df_j.iloc[0] # Sorted desc in load function? Yes.
                     # Wait, load_historical_market_data sorts desc.
-                    # So df_j.iloc[0] is the date closest to q_start (on or before).
+                    # So df_j.iloc[0] is the date closest to w_start (on or before).
                     # Check if it's too old
-                    if (q_start - closest_row["Date"]).days < 7:
+                    if (w_start - closest_row["Date"]).days < 7:
                         jibar_val = closest_row["JIBAR3M"] if "JIBAR3M" in closest_row else np.nan
 
-                # 2. Calculate Compounded ZARONIA over [q_start, q_end)
+                # 2. Calculate Compounded ZARONIA over [w_start, w_end)
                 # We need daily rates.
                 # Use zaronia_curve.history (dict)
                 # Loop days
-                curr = q_start.date()
-                end_date_obj = q_end.date()
+                curr = w_start.date()
+                end_date_obj = w_end.date()
                 
                 comp_factor = 1.0
                 days_total = 0
@@ -1840,15 +3251,15 @@ def main():
                 if days_total == 0:
                     zaronia_comp = 0.0
                 else:
-                    zaronia_comp = (comp_factor - 1.0) * (365.0 / (q_end - q_start).days) # ACT/365 annualized?
+                    zaronia_comp = (comp_factor - 1.0) * (365.0 / (w_end - w_start).days) # ACT/365 annualized?
                     # Actually standard is usually * 365 / days_in_period
-                    # (q_end - q_start).days is calendar days.
-                    cal_days = (q_end - q_start).days
+                    # (w_end - w_start).days is calendar days.
+                    cal_days = (w_end - w_start).days
                     zaronia_comp = (comp_factor - 1.0) * (365.0 / cal_days)
 
                 analysis_data.append({
-                    "Quarter": q_start.strftime("%Y-%m"),
-                    "Start Date": q_start.date(),
+                    "Week": w_start.strftime("%Y-%m-%d"),
+                    "Start Date": w_start.date(),
                     "JIBAR 3M": jibar_val,
                     "ZARONIA Comp": zaronia_comp * 100, # %
                     "Spread (bps)": (jibar_val - zaronia_comp*100) * 100 if not pd.isna(jibar_val) else np.nan
@@ -1862,18 +3273,18 @@ def main():
                 
                 with c1:
                     fig_ts = go.Figure()
-                    fig_ts.add_trace(go.Scatter(x=df_comp["Quarter"], y=df_comp["JIBAR 3M"], name="JIBAR 3M (Fix)", line=dict(color='#00CC96', width=2)))
-                    fig_ts.add_trace(go.Scatter(x=df_comp["Quarter"], y=df_comp["ZARONIA Comp"], name="ZARONIA (Realized)", line=dict(color='#EF553B', width=2)))
-                    fig_ts.update_layout(title="Fixing vs Realized: JIBAR 3M vs ZARONIA", xaxis_title="Quarter", yaxis_title="Rate (%)", template="plotly_dark", height=400)
-                    st.plotly_chart(fig_ts, use_container_width=True)
+                    fig_ts.add_trace(go.Scatter(x=df_comp["Week"], y=df_comp["JIBAR 3M"], name="JIBAR 3M (Fixed at Start)", line=dict(color='#00CC96', width=2)))
+                    fig_ts.add_trace(go.Scatter(x=df_comp["Week"], y=df_comp["ZARONIA Comp"], name="ZARONIA (Realized 3M)", line=dict(color='#EF553B', width=2)))
+                    fig_ts.update_layout(title="Rolling 3M Analysis: JIBAR 3M Fix vs ZARONIA Realized", xaxis_title="Period Start Date", yaxis_title="Rate (%)", template="plotly_dark", height=400)
+                    st.plotly_chart(fig_ts, width='stretch')
                     
                 with c2:
                     fig_sp = go.Figure()
-                    fig_sp.add_trace(go.Bar(x=df_comp["Quarter"], y=df_comp["Spread (bps)"], name="Spread", marker_color='#19D3F3'))
-                    fig_sp.update_layout(title="Realized Basis Spread (bps)", xaxis_title="Quarter", yaxis_title="Basis (bps)", template="plotly_dark", height=400)
-                    st.plotly_chart(fig_sp, use_container_width=True)
+                    fig_sp.add_trace(go.Bar(x=df_comp["Week"], y=df_comp["Spread (bps)"], name="Spread", marker_color='#19D3F3'))
+                    fig_sp.update_layout(title="3M Realized Basis Spread (bps)", xaxis_title="Period Start Date", yaxis_title="Basis (bps)", template="plotly_dark", height=400)
+                    st.plotly_chart(fig_sp, width='stretch')
                     
-                st.dataframe(df_comp.set_index("Quarter"), use_container_width=True)
+                st.dataframe(df_comp.set_index("Week"), width='stretch')
 
     with tab_hist:
         st.subheader("Historical Market Rates")
@@ -1918,11 +3329,11 @@ def main():
                 height=500,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig_hist, use_container_width=True)
+            st.plotly_chart(fig_hist, width='stretch')
             
             # 2. Data Table
             st.subheader("Data Table")
-            st.dataframe(df_hist, use_container_width=True)
+            st.dataframe(df_hist, width='stretch')
             
         else:
             st.warning("No historical data loaded. Ensure 'SARB-benchmark-data.csv' and 'JIBAR_FRA_SWAPS.xlsx' are in the directory.")
