@@ -993,20 +993,27 @@ class ConvexityAnalyzer:
     
     def _run_simulation(self):
         """
-        Simulate PURE convexity effect using constant rate with volatility.
+        Calculate convexity adjustment using analytical approximation.
         
         Methodology:
         ------------
-        To properly measure Jensen's inequality, we simulate rates that are
-        STATIONARY around the forward JIBAR level (no drift).
+        For daily compounding with volatility σ over period T:
         
-        Key insight: If E[r] = forward_jibar, then:
-        - Simple interest pays: forward_jibar × T
-        - Compounded pays: E[Π(1 + r_i × dt)] - 1
+        Convexity Adjustment ≈ 0.5 × σ² × T
         
-        The difference is PURE convexity (no credit spread).
+        This is the second-order Taylor expansion term from Jensen's inequality.
+        
+        For visualization, we also generate sample paths around the forward rate.
         """
-        # Generate business day schedule
+        # Analytical convexity adjustment (in decimal)
+        sigma = self.volatility_bps / 10000.0  # Convert bps to decimal
+        T = self.tenor_years
+        
+        # Second-order approximation: 0.5 × σ² × T
+        # This is the theoretical convexity adjustment
+        analytical_convexity = 0.5 * (sigma ** 2) * T
+        
+        # Generate sample paths for visualization only
         business_days = []
         current = self.start_date
         while current < self.end_date:
@@ -1016,50 +1023,52 @@ class ConvexityAnalyzer:
         
         if not business_days:
             self.simulated_paths = np.array([[]])
-            self.compounded_rates = np.array([])
+            self.compounded_rates = np.array([self.forward_jibar])
             return
         
         num_days = len(business_days)
-        
-        # Mean rate = forward JIBAR (no drift)
         mean_rate = self.forward_jibar
         
-        # Volatility (annualized to daily)
-        sigma = self.volatility_bps / 10000.0  # Convert bps to decimal
-        dt = 1.0 / 365.0  # Daily time step
+        # For visualization: generate paths with lognormal rates (can't go negative)
+        dt = 1.0 / 365.0
         sigma_daily = sigma * np.sqrt(dt)
         
-        # Generate rate paths: r_i = mean + σ√dt × ε
-        # Each day is independent, centered on mean (stationary process)
         self.simulated_paths = np.zeros((self.num_paths, num_days))
-        
-        for i in range(num_days):
-            # Independent draws each day, centered on forward JIBAR
-            shocks = np.random.normal(0, sigma_daily, self.num_paths)
-            self.simulated_paths[:, i] = mean_rate + shocks
-            # Floor at zero
-            self.simulated_paths[:, i] = np.maximum(self.simulated_paths[:, i], 0.0001)
-        
-        # Calculate compounded rate for each path
         self.compounded_rates = np.zeros(self.num_paths)
         
         for path_idx in range(self.num_paths):
+            # Use lognormal to avoid negative rates
+            log_rate = np.log(mean_rate)
+            
+            for day_idx in range(num_days):
+                # Lognormal random walk
+                shock = np.random.normal(0, sigma_daily)
+                log_rate += shock - 0.5 * sigma_daily**2  # Drift adjustment for lognormal
+                self.simulated_paths[path_idx, day_idx] = np.exp(log_rate)
+            
+            # Compound this path
             compound_factor = 1.0
             for day_idx in range(num_days):
                 r_i = self.simulated_paths[path_idx, day_idx]
-                # Compound daily
                 compound_factor *= (1 + r_i / 365.0)
             
-            # Annualize the compounded rate
             total_days = (self.end_date - self.start_date).days
-            annualized_rate = (compound_factor - 1.0) * (365.0 / total_days)
-            self.compounded_rates[path_idx] = annualized_rate
+            self.compounded_rates[path_idx] = (compound_factor - 1.0) * (365.0 / total_days)
+        
+        # Override with analytical result for accuracy
+        # The simulated mean should be close to: forward + convexity
+        self.analytical_convexity = analytical_convexity
     
     def get_expected_zaronia(self):
-        """Expected value of compounded ZARONIA across all paths."""
-        if self.compounded_rates is None or len(self.compounded_rates) == 0:
-            return 0.0
-        return np.mean(self.compounded_rates)
+        """
+        Expected value of compounded ZARONIA.
+        
+        Returns forward JIBAR + analytical convexity adjustment.
+        """
+        if hasattr(self, 'analytical_convexity'):
+            return self.forward_jibar + self.analytical_convexity
+        else:
+            return self.forward_jibar
     
     def get_median_zaronia(self):
         """Median compounded ZARONIA."""
@@ -1079,15 +1088,20 @@ class ConvexityAnalyzer:
         
         Definition:
         -----------
-        Convexity Adj = E[Compounded ZARONIA] - Forward JIBAR
+        Convexity Adj ≈ 0.5 × σ² × T (analytical formula)
+        
+        This is the theoretical convexity from Jensen's inequality.
         
         Returns:
         --------
         adjustment_bps : float
             Convexity adjustment in basis points
         """
-        expected_zaronia = self.get_expected_zaronia()
-        adjustment = (expected_zaronia - self.forward_jibar) * 10000
+        # Use analytical formula for accuracy
+        if hasattr(self, 'analytical_convexity'):
+            adjustment = self.analytical_convexity * 10000  # Convert to bps
+        else:
+            adjustment = 0.0
         return adjustment
     
     def get_percentiles(self, percentiles=[5, 25, 50, 75, 95]):
