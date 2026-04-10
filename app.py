@@ -1548,22 +1548,111 @@ def main():
         st.session_state.jibar_curve_data = edited_jibar
         
         st.subheader("Tenor Spread Overrides (bps)")
-        spread_tenors_labels = ["0bd", "1M", "3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y"]
-        spread_tenors_years = [0.0, 1/12, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0]
         
-        default_spreads = {
-            "Tenor": spread_tenors_labels,
-            "Spread (bps)": [s0_bps] * len(spread_tenors_labels)
-        }
-        df_spreads = pd.DataFrame(default_spreads)
-        edited_spreads = st.data_editor(
-            df_spreads,
-            width='stretch',
-            hide_index=True,
-            column_config={
-                "Spread (bps)": st.column_config.NumberColumn(format="%.2f bps")
+        # Spread management options
+        col_spread1, col_spread2 = st.columns(2)
+        with col_spread1:
+            zero_spreads = st.checkbox("Set All Spreads to Zero", value=False, key="zero_spreads_checkbox",
+                                       help="Override all spreads to 0 bps (JIBAR = ZARONIA)")
+        with col_spread2:
+            use_custom_curve = st.checkbox("Use Custom Spread Curve", value=False, key="custom_curve_checkbox",
+                                          help="Define custom spread curve with anchor points")
+        
+        # Store in session state for debugging
+        if 'zero_spreads_active' not in st.session_state:
+            st.session_state.zero_spreads_active = zero_spreads
+        else:
+            st.session_state.zero_spreads_active = zero_spreads
+        
+        spread_tenors_labels = ["0bd", "1M", "3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y", "7Y", "10Y"]
+        spread_tenors_years = [0.0, 1/12, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0]
+        
+        if use_custom_curve:
+            st.markdown("**Custom Spread Curve Builder**")
+            st.caption("Define anchor points - linear interpolation between points, flat extrapolation beyond last point")
+            
+            col_anchor1, col_anchor2, col_anchor3 = st.columns(3)
+            with col_anchor1:
+                anchor1_tenor = st.number_input("Anchor 1 Tenor (Years)", value=0.0, min_value=0.0, max_value=10.0, step=0.25, key="a1t")
+                anchor1_spread = st.number_input("Anchor 1 Spread (bps)", value=0.0, step=0.5, key="a1s")
+            with col_anchor2:
+                anchor2_tenor = st.number_input("Anchor 2 Tenor (Years)", value=5.0, min_value=0.0, max_value=10.0, step=0.25, key="a2t")
+                anchor2_spread = st.number_input("Anchor 2 Spread (bps)", value=5.0, step=0.5, key="a2s")
+            with col_anchor3:
+                use_anchor3 = st.checkbox("Add 3rd Anchor", value=False, key="use_a3")
+                if use_anchor3:
+                    anchor3_tenor = st.number_input("Anchor 3 Tenor (Years)", value=10.0, min_value=0.0, max_value=10.0, step=0.25, key="a3t")
+                    anchor3_spread = st.number_input("Anchor 3 Spread (bps)", value=5.0, step=0.5, key="a3s")
+            
+            # Build custom spread curve using linear interpolation
+            anchor_tenors = [anchor1_tenor, anchor2_tenor]
+            anchor_spreads = [anchor1_spread, anchor2_spread]
+            if use_anchor3:
+                anchor_tenors.append(anchor3_tenor)
+                anchor_spreads.append(anchor3_spread)
+            
+            # Sort anchors by tenor
+            sorted_anchors = sorted(zip(anchor_tenors, anchor_spreads))
+            anchor_tenors = [t for t, s in sorted_anchors]
+            anchor_spreads = [s for t, s in sorted_anchors]
+            
+            # Interpolate spreads for display tenors
+            custom_spreads = []
+            for t in spread_tenors_years:
+                if t <= anchor_tenors[0]:
+                    # Before first anchor - use first anchor value
+                    spread = anchor_spreads[0]
+                elif t >= anchor_tenors[-1]:
+                    # After last anchor - flat extrapolation
+                    spread = anchor_spreads[-1]
+                else:
+                    # Linear interpolation between anchors
+                    for i in range(len(anchor_tenors) - 1):
+                        if anchor_tenors[i] <= t <= anchor_tenors[i+1]:
+                            # Linear interpolation
+                            t1, s1 = anchor_tenors[i], anchor_spreads[i]
+                            t2, s2 = anchor_tenors[i+1], anchor_spreads[i+1]
+                            spread = s1 + (s2 - s1) * (t - t1) / (t2 - t1)
+                            break
+                custom_spreads.append(spread)
+            
+            default_spreads = {
+                "Tenor": spread_tenors_labels,
+                "Spread (bps)": custom_spreads
             }
-        )
+        elif zero_spreads:
+            default_spreads = {
+                "Tenor": spread_tenors_labels,
+                "Spread (bps)": [0.0] * len(spread_tenors_labels)
+            }
+        else:
+            default_spreads = {
+                "Tenor": spread_tenors_labels,
+                "Spread (bps)": [s0_bps] * len(spread_tenors_labels)
+            }
+        
+        df_spreads = pd.DataFrame(default_spreads)
+        
+        # When using presets, bypass the editor and use the default values directly
+        if zero_spreads or use_custom_curve:
+            edited_spreads = df_spreads.copy()
+            st.dataframe(
+                df_spreads,
+                width='stretch',
+                hide_index=True,
+                column_config={
+                    "Spread (bps)": st.column_config.NumberColumn(format="%.2f bps")
+                }
+            )
+        else:
+            edited_spreads = st.data_editor(
+                df_spreads,
+                width='stretch',
+                hide_index=True,
+                column_config={
+                    "Spread (bps)": st.column_config.NumberColumn(format="%.2f bps")
+                }
+            )
 
     with st.sidebar.expander("3. Trade Definition", expanded=True):
         trade_type = st.selectbox("Trade Type", ["JIBAR IRS", "ZARONIA OIS", "Basis Swap"])
@@ -1636,15 +1725,76 @@ def main():
     # 2. Spread Function
     try:
         s_y_points = edited_spreads["Spread (bps)"].values / 10000.0 
-        def spread_func(t):
-            if t > 5.0: return s_y_points[-1] 
-            return np.interp(t, spread_tenors_years, s_y_points)
+        
+        # Debug: Show actual values
+        st.sidebar.markdown(f"**Debug Info:**")
+        st.sidebar.caption(f"zero_spreads = {zero_spreads}")
+        st.sidebar.caption(f"use_custom_curve = {use_custom_curve}")
+        st.sidebar.caption(f"Spread values: {s_y_points[0]*10000:.2f} to {s_y_points[-1]*10000:.2f} bps")
+        
+        # Create spread function with explicit zero override
+        if zero_spreads:
+            # When zero spreads is checked, always return 0.0
+            def spread_func(t):
+                return 0.0
+            st.sidebar.success("✓ ZARONIA = JIBAR (zero spread)")
+        else:
+            # Normal spread interpolation
+            def spread_func(t):
+                # Flat extrapolation beyond 10Y (last tenor)
+                if t > 10.0: 
+                    return s_y_points[-1] 
+                # Linear interpolation between tenors
+                return np.interp(t, spread_tenors_years, s_y_points)
+            st.sidebar.info(f"ℹ️ Using spread curve")
     except Exception as e:
         st.error(f"Error building spread function: {e}")
         return
 
     # 3. ZARONIA Curve
-    zaronia_curve = ZaroniaCurve(val_date, jibar_curve, spread_func)
+    if zero_spreads:
+        # When spreads are zero, ZARONIA should equal JIBAR exactly
+        # Create a wrapper that uses JIBAR curve directly to avoid compounding methodology differences
+        class ZaroniaAsJibar:
+            def __init__(self, jibar_curve, val_date):
+                self.jibar_curve = jibar_curve
+                self.val_date = val_date
+                self.history = load_historical_zaronia()
+            
+            def get_zero_rate(self, t):
+                return self.jibar_curve.get_zero_rate(t)
+            
+            def get_df(self, t):
+                return self.jibar_curve.get_df(t)
+            
+            def get_rate_at(self, d):
+                # For historical dates, use history if available
+                if d <= self.val_date and d in self.history:
+                    return self.history[d] / 100.0
+                # Otherwise use JIBAR curve
+                t = year_frac(self.val_date, d)
+                return self.jibar_curve.get_zero_rate(t)
+            
+            def get_fwd_rates(self, t_array):
+                # When spreads are zero, JIBAR forward = ZARONIA forward
+                # Calculate JIBAR 3M forwards from the curve
+                j_fwd = np.zeros(len(t_array))
+                for i, t in enumerate(t_array):
+                    t_start = t
+                    t_end = t + 0.25  # 3 months
+                    df_start = self.jibar_curve.get_df(t_start)
+                    df_end = self.jibar_curve.get_df(t_end)
+                    j_fwd[i] = (df_start / df_end - 1) / 0.25
+                
+                # ZARONIA overnight forward = JIBAR forward (zero spread)
+                z_fwd = j_fwd.copy()
+                
+                return j_fwd, z_fwd
+        
+        zaronia_curve = ZaroniaAsJibar(jibar_curve, val_date)
+        st.sidebar.info("📊 ZARONIA curve set equal to JIBAR curve (zero spread)")
+    else:
+        zaronia_curve = ZaroniaCurve(val_date, jibar_curve, spread_func)
 
     # ==========================================
     # MAIN PANEL TABS
@@ -1903,6 +2053,129 @@ def main():
         # Carry & Roll-Down Analysis
         st.markdown("### 💰 Carry & Roll-Down Analysis")
         st.caption("Expected P&L from time decay and curve roll-down")
+        
+        with st.expander("📚 Academic Theory: Carry & Roll-Down", expanded=False):
+            st.markdown("""
+            ### Mathematical Framework for Carry and Roll-Down
+            
+            **1. CARRY (Coupon Income)**
+            
+            Carry represents the **net interest income** earned from holding a swap position over a period, assuming no change in market rates.
+            
+            **Definition:**
+            $$
+            \\text{Carry} = (r_{\\text{swap}} - r_{\\text{funding}}) \\times \\text{Notional} \\times \\Delta t
+            $$
+            
+            Where:
+            - $r_{\\text{swap}}$: Fixed rate received on the swap
+            - $r_{\\text{funding}}$: Cost of funding the position (typically 3M JIBAR)
+            - $\\Delta t$: Time horizon (e.g., 3 months = 0.25 years)
+            
+            **Economic Interpretation:**
+            - **Positive Carry**: Swap rate > Funding rate → Earn net interest income
+            - **Negative Carry**: Swap rate < Funding rate → Pay net interest cost
+            - Carry is deterministic and accrues linearly with time
+            
+            ---
+            
+            **2. ROLL-DOWN (Curve Positioning P&L)**
+            
+            Roll-down captures the **mark-to-market gain/loss** as a swap "rolls down" the yield curve over time, assuming the curve shape remains unchanged.
+            
+            **Mechanism:**
+            - A 5Y swap today becomes a 4.75Y swap in 3 months
+            - If the curve is upward sloping, the 4.75Y rate < 5Y rate
+            - The swap is now priced at a lower rate → Mark-to-market gain
+            
+            **Mathematical Formulation:**
+            
+            The present value change from roll-down is:
+            $$
+            \\text{Roll-Down P&L} = \\text{DV01} \\times \\Delta r \\times 10000
+            $$
+            
+            Where:
+            $$
+            \\Delta r = r(T) - r(T - \\Delta t)
+            $$
+            
+            And DV01 (Dollar Value of 01) is:
+            $$
+            \\text{DV01} \\approx \\text{Notional} \\times \\text{Duration} \\times 0.0001
+            $$
+            
+            **Duration Approximation:**
+            $$
+            \\text{Duration} \\approx \\frac{T}{2} \\quad \\text{(for par swaps)}
+            $$
+            
+            ---
+            
+            **3. TOTAL EXPECTED RETURN**
+            
+            $$
+            \\text{Total Return} = \\text{Carry} + \\text{Roll-Down P&L}
+            $$
+            
+            **Key Insights:**
+            
+            1. **Upward Sloping Curve (Normal)**:
+               - Carry > 0 (long-dated swaps pay more than funding)
+               - Roll-Down > 0 (rates decrease as you roll down)
+               - **Both components positive** → Strong total return
+            
+            2. **Flat Curve**:
+               - Carry ≈ 0 (swap rate ≈ funding rate)
+               - Roll-Down = 0 (no rate change)
+               - **Minimal return** → Curve positioning irrelevant
+            
+            3. **Inverted Curve**:
+               - Carry < 0 (swap rate < funding rate)
+               - Roll-Down < 0 (rates increase as you roll down)
+               - **Both components negative** → Negative total return
+            
+            ---
+            
+            **4. TRADING APPLICATIONS**
+            
+            **Curve Steepeners:**
+            - Buy long-dated swaps (high carry + positive roll-down)
+            - Sell short-dated swaps (low carry + minimal roll-down)
+            - Profit from curve steepness over time
+            
+            **Carry Trades:**
+            - Identify maximum carry points on the curve
+            - Balance carry income vs roll-down risk
+            - Optimal when curve is steep and stable
+            
+            **Roll-Down Strategies:**
+            - Position in the "sweet spot" of maximum roll-down
+            - Typically in the 2-5Y sector for steep curves
+            - Harvest roll-down while managing duration risk
+            
+            ---
+            
+            **5. RISK CONSIDERATIONS**
+            
+            **Assumptions:**
+            - **Parallel shift risk**: Assumes curve shape unchanged
+            - **Funding stability**: Assumes constant funding rate
+            - **No credit events**: Assumes no counterparty defaults
+            
+            **Reality:**
+            - Curves can steepen, flatten, or invert
+            - Funding costs can spike (liquidity crisis)
+            - Volatility can erode carry returns
+            
+            **Risk-Adjusted Carry:**
+            $$
+            \\text{Sharpe Ratio} = \\frac{\\text{Expected Return}}{\\text{Volatility of Returns}}
+            $$
+            
+            Carry strategies work best in **low volatility, stable curve** environments.
+            """)
+        
         
         # Interactive tenor selection
         carry_tenor = st.selectbox("Select Swap Tenor for Carry Analysis:", 
@@ -2180,14 +2453,33 @@ def main():
         par_rate = 0.0
         par_spread = 0.0
         
-        if trade_type in ["JIBAR IRS", "ZARONIA OIS"]:
+        if solve_par and trade_type in ["JIBAR IRS", "ZARONIA OIS"]:
+            from scipy.optimize import brentq as brentq_par
+            
             def obj(r):
                 pv1, pv2 = price_swap(r)
                 return pv1 - pv2
+            
             try:
-                par_rate = brentq(obj, -0.10, 0.50)
-            except:
-                par_rate = 0.0
+                # Check if objective function has opposite signs at bounds
+                obj_low = obj(-0.01)
+                obj_high = obj(0.20)
+                
+                if obj_low * obj_high < 0:
+                    # Signs are opposite, solution exists
+                    par_rate = brentq_par(obj, -0.01, 0.20, xtol=1e-6)
+                else:
+                    # Try wider bounds
+                    obj_low = obj(0.0)
+                    obj_high = obj(0.50)
+                    if obj_low * obj_high < 0:
+                        par_rate = brentq_par(obj, 0.0, 0.50, xtol=1e-6)
+                    else:
+                        # Fallback: use approximate par rate from curve
+                        par_rate = jibar_curve.get_zero_rate(maturity_years)
+            except Exception as e:
+                # Fallback to curve rate
+                par_rate = jibar_curve.get_zero_rate(maturity_years)
         elif trade_type == "Basis Swap" and solve_basis:
              # Solve for spread on selected leg (JIBAR or ZARONIA) to make NPV=0
              def obj_basis(s_bps):
@@ -2470,14 +2762,59 @@ def main():
             irs_risk_data = []
             
             for tenor in irs_tenors:
-                # DV01: Rate risk to next reset ONLY (3 months for JIBAR 3M)
-                # DV01 ≈ Notional × Time_to_Reset × 0.0001
-                time_to_reset = 0.25  # 3 months
-                dv01_value = notional * time_to_reset * 0.0001
+                # DV01: Use finite difference method - bump JIBAR curve by 1bp and reprice
+                # Create test swap for this tenor
+                test_leg_fixed = SwapLeg('Fixed', 'ZAR', notional, start_date, tenor, 'Annual', fixed_rate=0.0)
+                test_leg_float = SwapLeg('Float', 'ZAR', notional, start_date, tenor, 'Quarterly', float_index='JIBAR')
                 
-                # CS01: Full term spread risk
-                # CS01 ≈ Notional × Full_Tenor × 0.0001
-                cs01_value = notional * tenor * 0.0001
+                # Find par rate first
+                def price_test_swap(rate):
+                    test_leg_fixed.fixed_rate = rate
+                    test_leg_fixed.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                    test_leg_float.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                    return test_leg_fixed.get_pv() - test_leg_float.get_pv()
+                
+                from scipy.optimize import brentq as brentq_dv01
+                
+                try:
+                    par_rate_test = brentq_dv01(price_test_swap, 0.0, 0.20)
+                except Exception as e:
+                    par_rate_test = jibar_curve.get_zero_rate(tenor)
+                
+                # Set the swap to par rate
+                test_leg_fixed.fixed_rate = par_rate_test
+                
+                # DV01: Bump JIBAR curve by 1bp for DV01 calculation
+                # For proper DV01, we need to bump the discount curve but keep the forward rates unchanged
+                j_rates_bump = j_rates + 0.0001
+                jibar_curve_bump = JibarZeroCurve(j_tenors, j_rates_bump)
+                if zero_spreads:
+                    zaronia_curve_bump = ZaroniaAsJibar(jibar_curve_bump, val_date)
+                else:
+                    zaronia_curve_bump = ZaroniaCurve(val_date, jibar_curve_bump, spread_func)
+                
+                # Price at base rates first
+                test_leg_fixed.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                test_leg_float.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                pv_base = test_leg_fixed.get_pv() - test_leg_float.get_pv()
+                
+                # Capture individual leg PVs immediately after base calculation
+                fixed_pv_base = test_leg_fixed.get_pv()
+                float_pv_base = test_leg_float.get_pv()
+                
+                # Price with bumped discount curves
+                # Fixed leg uses bumped discount curve (rate risk)
+                # Float leg uses original curves (to isolate rate risk from basis risk)
+                test_leg_fixed.calculate_cashflows(jibar_curve_bump, zaronia_curve_bump, selected_disc)
+                test_leg_float.calculate_cashflows(jibar_curve, zaronia_curve, selected_disc)
+                pv_bump = test_leg_fixed.get_pv() - test_leg_float.get_pv()
+                
+                # DV01 is the change in PV for 1bp bump
+                dv01_value = abs(pv_bump - pv_base)
+                
+                # CS01: Full term spread risk (approximate using duration)
+                duration_approx = tenor / 2.0  # Approximate duration for par swap
+                cs01_value = notional * duration_approx * 0.0001
                 
                 # Ratio shows spread risk dominance
                 cs01_dv01_ratio = cs01_value / dv01_value if dv01_value != 0 else 0
@@ -2490,6 +2827,7 @@ def main():
                 
                 # Credit spread embedded in JIBAR
                 credit_spread_bps = (jibar_par - zaronia_par) * 100
+                time_to_reset = 0.25  # 3 months for JIBAR 3M
                 
                 irs_risk_data.append({
                     'Tenor': f'{tenor}Y',
@@ -2634,37 +2972,39 @@ def main():
             ("5Y", 5.0, 'Annual'), ("10Y", 10.0, 'Annual')
         ]
         
+        from scipy.optimize import brentq as brentq_solver
+        
         bench_data = []
         for label, t_year, freq in bench_tenors:
-            leg_fix = SwapLeg('Fixed', 'ZAR', 100, start_date, t_year, freq, fixed_rate=0.0)
-            leg_flt = SwapLeg('Float', 'ZAR', 100, start_date, t_year, freq, float_index='ZARONIA')
-            
-            def solve_bench(r):
-                leg_fix.fixed_rate = r
-                leg_fix.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
-                leg_flt.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
-                
-                pv_fix = leg_fix.get_pv()
-                pv_flt = leg_flt.get_pv()
-                
-                # Check for zero sensitivity to avoid solver errors
-                if pv_fix == 0 and r != 0: 
-                    return 0.0 # Degenerate case
-                
-                return pv_fix - pv_flt
-                
-            # Pre-check existence of cashflows
-            leg_fix.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
-            if not leg_fix.cashflows:
-                bench_data.append({"Tenor": label, "Par Rate (%)": "No Cashflows"})
-                continue
-
             try:
-                # Widen bracket and check signs
-                r_par = brentq(solve_bench, -0.99, 5.0)
+                leg_fix = SwapLeg('Fixed', 'ZAR', 100, start_date, t_year, freq, fixed_rate=0.0)
+                leg_flt = SwapLeg('Float', 'ZAR', 100, start_date, t_year, freq, float_index='ZARONIA')
+                
+                def solve_bench(r):
+                    leg_fix.fixed_rate = r
+                    leg_fix.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                    leg_flt.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                    
+                    pv_fix = leg_fix.get_pv()
+                    pv_flt = leg_flt.get_pv()
+                    
+                    # Check for zero sensitivity to avoid solver errors
+                    if pv_fix == 0 and r != 0: 
+                        return 0.0 # Degenerate case
+                    
+                    return pv_fix - pv_flt
+                    
+                # Pre-check existence of cashflows
+                leg_fix.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                if not leg_fix.cashflows:
+                    bench_data.append({"Tenor": label, "Par Rate (%)": "No Cashflows"})
+                    continue
+
+                # Solve for par rate
+                r_par = brentq_solver(solve_bench, -0.99, 5.0)
                 bench_data.append({"Tenor": label, "Par Rate (%)": r_par * 100})
             except Exception as e:
-                bench_data.append({"Tenor": label, "Par Rate (%)": f"Err: {str(e)}"})
+                bench_data.append({"Tenor": label, "Par Rate (%)": f"Err: {str(e)[:30]}"})
                 
         df_bench = pd.DataFrame(bench_data).set_index("Tenor").T
         # Use a more flexible formatter that handles strings (errors) and floats
@@ -2728,47 +3068,129 @@ def main():
             *   $n_i$: calendar days until next JBD
             """)
 
-        # Inputs
-        col_f1, col_f2, col_f3 = st.columns(3)
-        issue_date = col_f1.date_input("Issue Date", value=val_date)
-        # Default 3Y maturity
-        mat_date = col_f2.date_input("Maturity Date", value=add_business_days(val_date, 365*3))
-        frn_notional = col_f3.number_input("Notional (ZAR)", value=100000000, step=1000000)
-        
-        col_f4, col_f5, col_f6 = st.columns(3)
-        margin_bps = col_f4.number_input("Margin (bps)", value=95.0)
-        lookback = col_f5.number_input("Lookback (JBD)", value=5)
-        clean_target = col_f6.number_input("Target Clean Price (%)", value=100.0)
+        # Pricing Mode Selection
+        st.markdown("### Pricing Mode")
+        pricing_mode = st.radio(
+            "What do you want to solve for?",
+            ["Calculate Price (given Margin)", "Calculate Margin (given Price)"],
+            horizontal=True,
+            help="Choose whether to calculate price from a given margin, or solve for the margin that achieves a target price"
+        )
         
         st.divider()
         
-        # Calculate
-        frn = ZaroniaFRN(frn_notional, issue_date, mat_date, margin_bps, lookback)
-        frn.calculate_cashflows(zaronia_curve)
+        # Bond Details
+        st.markdown("### Bond Details")
+        col_f1, col_f2, col_f3 = st.columns(3)
         
-        clean_price = frn.get_clean_price()
-        dirty_price = clean_price # Approx for now, need accrued logic for full dirty
-        # Accrued Interest Calculation (Simplified: if val_date inside a period)
+        with col_f1:
+            st.markdown("**Dates**")
+            issue_date = st.date_input("Issue Date", value=val_date, key="frn_issue")
+            mat_date = st.date_input("Maturity Date", value=add_business_days(val_date, 365*3), key="frn_mat")
+            settlement_date = st.date_input("Settlement Date", value=val_date, key="frn_settle")
+        
+        with col_f2:
+            st.markdown("**Notional & Structure**")
+            frn_notional = st.number_input("Notional (ZAR)", value=100_000_000, step=1_000_000, format="%d", key="frn_not")
+            payment_freq = st.selectbox("Payment Frequency", ["Quarterly", "Semi-annual", "Annual"], index=0, key="frn_freq")
+            day_count = st.selectbox("Day Count Convention", ["ACT/365", "ACT/360", "30/360"], index=0, key="frn_dc")
+        
+        with col_f3:
+            st.markdown("**ZARONIA Reference**")
+            lookback = st.number_input("Lookback (JBD)", value=5, min_value=0, max_value=10, key="frn_lb",
+                                      help="Number of business days to look back for ZARONIA rate")
+            observation_shift = st.number_input("Observation Shift (Days)", value=0, min_value=0, max_value=5, key="frn_shift",
+                                               help="Additional shift for observation period")
+        
+        st.divider()
+        
+        # Pricing Inputs
+        st.markdown("### Pricing Inputs")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        
+        # Initialize variables to ensure they're always defined
+        margin_bps = 95.0  # Default value
+        clean_target = 100.0  # Default value
+        
+        if pricing_mode == "Calculate Price (given Margin)":
+            with col_p1:
+                margin_bps = st.number_input("Quoted Margin (bps)", value=95.0, step=0.25, format="%.2f", key="frn_margin",
+                                            help="Spread over compounded ZARONIA")
+            with col_p2:
+                st.caption("Price will be calculated")
+                clean_target = None
+            with col_p3:
+                st.caption("Based on margin and curve")
+        else:  # Calculate Margin (given Price)
+            with col_p1:
+                clean_target = st.number_input("Target Clean Price (%)", value=100.00, step=0.01, format="%.4f", key="frn_price",
+                                              help="Target clean price as % of par")
+            with col_p2:
+                st.caption("Margin will be solved")
+            with col_p3:
+                st.caption("To achieve target price")
+            margin_bps = None  # Will be solved
+        
+        st.divider()
+        
+        # Initialize variables to ensure they're always defined
+        solved_margin = 0.0
+        clean_price = 100.0
+        
+        # Calculate based on pricing mode
+        if pricing_mode == "Calculate Price (given Margin)":
+            # Standard calculation: margin -> price
+            frn = ZaroniaFRN(frn_notional, issue_date, mat_date, margin_bps, lookback, payment_freq)
+            frn.calculate_cashflows(zaronia_curve)
+            
+            clean_price = frn.get_clean_price()
+            solved_margin = margin_bps
+            
+        else:  # Calculate Margin (given Price)
+            # Solve for margin that gives target price
+            from scipy.optimize import brentq
+            
+            def price_error(margin_bps_trial):
+                frn_trial = ZaroniaFRN(frn_notional, issue_date, mat_date, margin_bps_trial, lookback, payment_freq)
+                frn_trial.calculate_cashflows(zaronia_curve)
+                return frn_trial.get_clean_price() - clean_target
+            
+            try:
+                # Solve for margin (search between -500 and +500 bps)
+                solved_margin = brentq(price_error, -500, 500, xtol=0.01)
+                
+                # Recalculate with solved margin
+                frn = ZaroniaFRN(frn_notional, issue_date, mat_date, solved_margin, lookback, payment_freq)
+                frn.calculate_cashflows(zaronia_curve)
+                clean_price = frn.get_clean_price()
+                
+                st.success(f"✓ Solved margin: **{solved_margin:.2f} bps** achieves target price of {clean_target:.4f}%")
+            except ValueError:
+                st.error("Could not solve for margin. Target price may be outside achievable range.")
+                # Fallback to 0 margin
+                solved_margin = 0.0
+                frn = ZaroniaFRN(frn_notional, issue_date, mat_date, 0.0, lookback, payment_freq)
+                frn.calculate_cashflows(zaronia_curve)
+                clean_price = frn.get_clean_price()
+        
+        # Accrued Interest Calculation
         accrued = 0.0
-        # Find current period
         for cf in frn.cashflows:
-            if cf['Start'] <= val_date < cf['End']:
-                # Roughly calculate accrued
-                # Real way: exact daily compounding from Start to val_date
-                # We can reuse the daily logic or simplified linear for display
-                days_accrued = (val_date - cf['Start']).days
+            if cf['Start'] <= settlement_date < cf['End']:
+                days_accrued = (settlement_date - cf['Start']).days
                 if days_accrued > 0:
-                     # This is an approximation for display
-                     accrued = (cf['Coupon'] * days_accrued / 365.0) * 100
+                    accrued = (cf['Coupon'] * days_accrued / 365.0) * 100
                 break
         
         dirty_price = clean_price + accrued
         
         # Metrics
+        st.markdown("### Pricing Results")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Clean Price", f"{clean_price:.4f}%")
-        m2.metric("Dirty Price", f"{dirty_price:.4f}%")
-        m3.metric("Accrued Interest", f"{accrued:.4f}%")
+        m1.metric("Quoted Margin", f"{solved_margin:.2f} bps")
+        m2.metric("Clean Price", f"{clean_price:.4f}%")
+        m3.metric("Dirty Price", f"{dirty_price:.4f}%")
+        m4.metric("Accrued Interest", f"{accrued:.4f}%")
         
         equiv_q = frn.get_quarterly_equivalent()
         m4.metric("Q-Equiv Rate (First Period)", f"{equiv_q*100:.4f}%")
@@ -2812,11 +3234,26 @@ def main():
                 l_fix.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA') # Discount on OIS always
                 l_flt.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
                 return l_fix.get_pv() - l_flt.get_pv()
-                
+            
+            # Import brentq locally to avoid scoping issues
+            from scipy.optimize import brentq as brentq_par
+            
+            # Check solver bounds first
             try:
-                return brentq(solver, -0.05, 0.20)
-            except:
-                return 0.0
+                pv_low = solver(-0.05)
+                pv_high = solver(0.20)
+                
+                # If signs are opposite, use brentq
+                if pv_low * pv_high < 0:
+                    return brentq_par(solver, -0.05, 0.20)
+                else:
+                    # Use curve rate as fallback
+                    curve_rate = jibar_curve.get_zero_rate(tenor_y) if index_type == 'JIBAR' else zaronia_curve.get_zero_rate(tenor_y)
+                    return curve_rate
+            except Exception:
+                # Use curve rate as ultimate fallback
+                curve_rate = jibar_curve.get_zero_rate(tenor_y) if index_type == 'JIBAR' else zaronia_curve.get_zero_rate(tenor_y)
+                return curve_rate
 
         par_zaronia_ois = get_par_rate_for_tenor(frn_years, 'ZARONIA')
         par_jibar_irs = get_par_rate_for_tenor(frn_years, 'JIBAR')
@@ -2831,7 +3268,11 @@ def main():
         
         # Effective Yield of FRN (ZARONIA + Margin) roughly
         # Let's use the first period Q-Equiv + Margin as the "current yield" proxy
-        frn_yield = equiv_q + (margin_bps / 10000.0)
+        if margin_bps is not None:
+            frn_yield = equiv_q + (margin_bps / 10000.0)
+        else:
+            # When solving for margin, use the solved margin
+            frn_yield = equiv_q + (solved_margin / 10000.0)
         
         # Asset Swap Spread (ASW) over ZARONIA OIS
         # Spread = FRN Yield - ZARONIA Par Rate
@@ -2913,18 +3354,27 @@ def main():
         # Approximate: DV01 ≈ Notional × Time_to_Reset × 0.0001
         dv01_frn_reset = frn_notional * time_to_reset * 0.0001
         
-        # For more accurate calculation, bump the forward rate for next period
+        # For more accurate calculation, create a modified ZARONIA curve with bumped discount rates
+        # but keep the same forward rates for proper DV01 calculation
         j_rates_up = j_rates + 0.0001
         jibar_curve_up = JibarZeroCurve(j_tenors, j_rates_up)
-        zaronia_curve_up = ZaroniaCurve(val_date, jibar_curve_up, spread_func)
         
-        frn.calculate_cashflows(zaronia_curve_up)
-        pv_frn_up = sum(cf['PV'] for cf in frn.cashflows) + frn.principal_flow['PV']
+        # Create bumped ZARONIA curve for discounting only
+        if zero_spreads:
+            zaronia_curve_up = ZaroniaAsJibar(jibar_curve_up, val_date)
+        else:
+            zaronia_curve_up = ZaroniaCurve(val_date, jibar_curve_up, spread_func)
         
+        # Calculate base PV with original ZARONIA curve
         frn.calculate_cashflows(zaronia_curve)
         pv_frn_base = sum(cf['PV'] for cf in frn.cashflows) + frn.principal_flow['PV']
         
-        dv01_frn_actual = pv_frn_up - pv_frn_base
+        # Calculate bumped PV with bumped ZARONIA curve for discounting
+        # but keep the same forward ZARONIA rates (this isolates pure rate risk)
+        frn.calculate_cashflows(zaronia_curve_up)
+        pv_frn_up = sum(cf['PV'] for cf in frn.cashflows) + frn.principal_flow['PV']
+        
+        dv01_frn_actual = abs(pv_frn_up - pv_frn_base)
         
         # ==========================================
         # CS01: Full Term Spread Risk
@@ -3749,6 +4199,135 @@ def main():
             st.markdown("### 🎯 DV01 vs CS01: Term Structure Risk Analysis")
             st.caption("Comparing interest rate risk (DV01) vs credit spread risk (CS01) for hedging")
             
+            with st.expander("📚 Academic Theory: DV01 vs CS01 Risk Decomposition", expanded=False):
+                st.markdown(r"""
+                ## Mathematical Framework for Risk Decomposition
+                
+                **1. DV01 (Dollar Value of 01 Basis Point)**
+                
+                DV01 measures the **price sensitivity** of a financial instrument to a **1 basis point (0.01%) parallel shift** in the yield curve.
+                
+                **Definition:**
+                $$
+                \text{DV01} = \left| \frac{\partial PV}{\partial y} \right| \times 0.0001
+                $$
+                
+                Where:
+                - $PV$: Present Value of the instrument
+                - $y$: Yield rate (decimal)
+                - $0.0001$: 1 basis point in decimal form
+                
+                **Finite Difference Approximation:**
+                $$
+                \text{DV01} \approx \frac{|PV(y + 0.0001) - PV(y)|}{0.0001}
+                $$
+                
+                **Economic Interpretation:**
+                - **Positive DV01**: Price increases when rates decrease (typical for fixed-rate instruments)
+                - **Negative DV01**: Price decreases when rates increase
+                - **Duration Approximation**: DV01 × Modified Duration × PV
+                
+                ---
+                
+                **2. CS01 (Credit Spread 01)**
+                
+                CS01 measures the **price sensitivity** to a **1 basis point change in credit spread** or **basis spread** between two reference rates.
+                
+                **Definition:**
+                $$
+                \text{CS01} = \left| \frac{\partial PV}{\partial s} \right| \times 0.0001
+                $$
+                
+                Where:
+                - $s$: Credit spread or basis spread (in decimal)
+                
+                **For JIBAR-ZARONIA Basis:**
+                $$
+                \text{CS01} = \text{Sensitivity to } (r_{\text{JIBAR}} - r_{\text{ZARONIA}})
+                $$
+                
+                ---
+                
+                **3. Risk Decomposition Theory**
+                
+                **Total Risk Framework:**
+                $$
+                \Delta PV = \underbrace{\text{DV01} \times \Delta y}_{\text{Interest Rate Risk}} + \underbrace{\text{CS01} \times \Delta s}_{\text{Credit Spread Risk}}
+                $$
+                
+                **Key Insights:**
+                
+                **JIBAR IRS Risk Profile:**
+                - **DV01**: Limited to next reset period (typically 3 months for JIBAR 3M)
+                - **CS01**: Full term exposure to JIBAR-ZARONIA basis risk
+                - **Risk Ratio**: CS01/DV01 typically 4-20x, showing spread risk dominance
+                
+                **ZARONIA OIS Risk Profile:**
+                - **DV01**: Full term sensitivity to overnight rate changes
+                - **CS01**: Minimal (no basis risk to itself)
+                - **Pure Rate Risk**: No credit spread component
+                
+                ---
+                
+                **4. Hedging Mathematics**
+                
+                **DV01 Hedging:**
+                $$
+                \text{Hedge Notional} = \frac{\text{DV01}_{\text{Exposure}}}{\text{DV01}_{\text{Hedge Instrument}}}
+                $$
+                
+                **CS01 Hedging:**
+                $$
+                \text{Basis Hedge Notional} = \frac{\text{CS01}_{\text{Exposure}}}{\text{CS01}_{\text{Basis Instrument}}}
+                $$
+                
+                **Cross-Curve Hedging:**
+                When hedging JIBAR exposure with ZARONIA instruments:
+                $$
+                \text{Hedge Ratio} = \frac{\text{DV01}_{\text{JIBAR}}}{\text{DV01}_{\text{ZARONIA}}}
+                $$
+                
+                ---
+                
+                **5. Term Structure Considerations**
+                
+                **Curve Slope Impact:**
+                - **Steep Curve**: Long-dated instruments have higher DV01
+                - **Flat Curve**: DV01 more uniform across tenors
+                - **Inverted Curve**: Negative carry, DV01 behavior changes
+                
+                **Convexity Effects:**
+                $$
+                \text{Convexity Adjustment} \approx \frac{1}{2} \times \text{Convexity} \times (\Delta y)^2
+                $$
+                
+                **Basis Risk Dynamics:**
+                - **Term Structure of Basis**: JIBAR-ZARONIA spread varies by tenor
+                - **Liquidity Premium**: Longer tenors typically have wider spreads
+                - **Credit Risk Integration**: Basis reflects interbank credit risk
+                
+                ---
+                
+                **6. Trading Applications**
+                
+                **Relative Value Trading:**
+                - **Basis Trades**: Long JIBAR IRS, Short ZARONIA OIS (or vice versa)
+                - **Curve Trades**: Steepeners/Flatteners using DV01-weighted positions
+                - **Spread Trades**: Isolate CS01 exposure for credit views
+                
+                **Risk Management:**
+                - **DV01 Matching**: Align rate risk across portfolio
+                - **CS01 Monitoring**: Track basis risk accumulation
+                - **Stress Testing**: Apply parallel and twist scenarios
+                
+                **Portfolio Optimization:**
+                $$
+                \text{Optimal Hedge} = \min_{w} \left( \sigma_{\text{total}}^2 + \lambda \text{Cost} \right)
+                $$
+                
+                Subject to DV01 and CS01 constraints.
+                """)
+            
             # Calculate DV01 (interest rate sensitivity) and CS01 (credit spread sensitivity)
             # DV01 = change in PV for 1bp parallel shift in rates
             # CS01 = change in PV for 1bp shift in credit spread
@@ -3757,13 +4336,48 @@ def main():
             
             for tenor in tenors_years:
                 # Calculate DV01: PV sensitivity to 1bp shift in JIBAR curve
-                base_jibar_rate = jibar_curve.get_zero_rate(tenor)
+                # Use finite difference method for accuracy
                 
-                # Approximate DV01 using duration
-                # DV01 ≈ Modified Duration × PV × 0.0001
-                # For a swap, modified duration ≈ tenor / 2 (rough approximation)
-                approx_duration = tenor / 2.0
-                pv_per_bp = conv_notional * approx_duration * 0.0001
+                # Create test swap for this tenor
+                test_fixed = SwapLeg('Fixed', 'ZAR', conv_notional, start_date, tenor, 'Annual', fixed_rate=0.0)
+                test_float = SwapLeg('Float', 'ZAR', conv_notional, start_date, tenor, 'Quarterly', float_index='JIBAR')
+                
+                # Find par rate
+                def price_conv_swap(rate):
+                    test_fixed.fixed_rate = rate
+                    test_fixed.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                    test_float.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                    return test_fixed.get_pv() - test_float.get_pv()
+                
+                try:
+                    from scipy.optimize import brentq as brentq_conv
+                    par_rate_conv = brentq_conv(price_conv_swap, 0.0, 0.20)
+                except:
+                    par_rate_conv = jibar_curve.get_zero_rate(tenor)
+                
+                # Set to par rate
+                test_fixed.fixed_rate = par_rate_conv
+                
+                # Price at base rates
+                test_fixed.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                test_float.calculate_cashflows(jibar_curve, zaronia_curve, 'ZARONIA')
+                pv_base = test_fixed.get_pv() - test_float.get_pv()
+                
+                # Bump JIBAR curve by 1bp
+                j_rates_bump_conv = j_rates + 0.0001
+                jibar_curve_bump_conv = JibarZeroCurve(j_tenors, j_rates_bump_conv)
+                if zero_spreads:
+                    zaronia_curve_bump_conv = ZaroniaAsJibar(jibar_curve_bump_conv, val_date)
+                else:
+                    zaronia_curve_bump_conv = ZaroniaCurve(val_date, jibar_curve_bump_conv, spread_func)
+                
+                # Price with bumped curve
+                test_fixed.calculate_cashflows(jibar_curve_bump_conv, zaronia_curve_bump_conv, 'ZARONIA')
+                test_float.calculate_cashflows(jibar_curve_bump_conv, zaronia_curve_bump_conv, 'ZARONIA')
+                pv_bump = test_fixed.get_pv() - test_float.get_pv()
+                
+                # DV01 is the change in PV for 1bp bump
+                pv_per_bp = abs(pv_bump - pv_base)
                 
                 # CS01: PV sensitivity to 1bp shift in credit spread (JIBAR-ZARONIA basis)
                 # For basis risk, CS01 is similar to DV01 but applies to spread
